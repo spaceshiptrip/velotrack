@@ -66,10 +66,19 @@ class GarminSyncService:
     async def fetch_activity_fit(self, activity_id: str) -> Optional[bytes]:
         client = await self.get_client()
         try:
-            return client.download_activity(
+            # Download as zip (ORIGINAL), extract the .fit file
+            import zipfile, io
+            zip_bytes = client.download_activity(
                 activity_id,
                 dl_fmt=client.ActivityDownloadFormat.ORIGINAL,
             )
+            if not zip_bytes:
+                return None
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+                fit_files = [n for n in z.namelist() if n.lower().endswith('.fit')]
+                if fit_files:
+                    return z.read(fit_files[0])
+            return None
         except Exception as e:
             log.error("garmin.fit_download_failed", id=activity_id, error=str(e))
             return None

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { useAppStore } from '../store'
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
+import { useApi } from '../hooks/useApi'
 import { useState } from 'react'
 
 const NAV = [
@@ -22,6 +22,7 @@ const NAV = [
 
 export default function Layout() {
   const { settings, isServerAvailable, setServerAvailable } = useAppStore()
+  const api = useApi()
   const [syncing, setSyncing] = useState(false)
 
   // Ping server health
@@ -29,7 +30,7 @@ export default function Layout() {
     queryKey: ['server-health'],
     queryFn: async () => {
       try {
-        await axios.get(`${settings.apiUrl}/health`, { timeout: 3000 })
+        await (await import('axios')).default.get(`${settings.apiUrl}/health`, { timeout: 3000 })
         setServerAvailable(true)
         return true
       } catch {
@@ -45,7 +46,7 @@ export default function Layout() {
     if (!isServerAvailable) return
     setSyncing(true)
     try {
-      await axios.post(`${settings.apiUrl}/api/v1/sync/trigger`, {
+      await api.post('/sync/trigger', {
         start_date: new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
         end_date: new Date().toISOString().split('T')[0],
       })

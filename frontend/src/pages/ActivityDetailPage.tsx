@@ -27,7 +27,7 @@ export default function ActivityDetailPage() {
   const { data: streams } = useQuery({
     queryKey: ['streams', id],
     queryFn: () => api.get(`/activities/${id}/streams`).then(r => r.data),
-    enabled: !!id && (tab === 'streams' || tab === 'map'),
+    enabled: !!id,
   })
 
   if (isLoading) return (
@@ -181,15 +181,17 @@ export default function ActivityDetailPage() {
       {/* Map tab */}
       {tab === 'map' && (
         <Card padding={12}>
-          {act.gps_track?.length ? (
+          {streams?.gps?.length ? (
             <>
-              <ActivityMap track={act.gps_track} height={520} tileUrl={settings.mapTileUrl} />
+              <ActivityMap track={streams.gps} height={520} tileUrl={settings.mapTileUrl} />
               <div style={{ marginTop: 12, display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)' }}>
                 <span>● Start</span>
                 <span style={{ color: '#ef4444' }}>● End</span>
-                <span>{act.gps_track.length.toLocaleString()} GPS points</span>
+                <span>{streams.gps.length.toLocaleString()} GPS points</span>
               </div>
             </>
+          ) : act.has_gps ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner size={24} /></div>
           ) : (
             <EmptyState icon="🗺️" message="No GPS data for this activity" />
           )}
