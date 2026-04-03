@@ -106,7 +106,10 @@ async def _do_sync(start, end, user_id: int = 1):
                     start_time = None
                     if act_data.get("start_time"):
                         try:
-                            start_time = parse_dt(act_data["start_time"])
+                            st = act_data["start_time"]
+                            start_time = parse_dt(st) if isinstance(st, str) else st
+                            if hasattr(start_time, 'tzinfo') and start_time.tzinfo:
+                                start_time = start_time.replace(tzinfo=None)
                         except Exception:
                             pass
 

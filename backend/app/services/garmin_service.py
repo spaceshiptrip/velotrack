@@ -31,37 +31,17 @@ class GarminSyncService:
 
         os.makedirs(self.tokens_path, exist_ok=True)
 
-        # ── Try saved token first ──────────────────────────────────────────
-        try:
-            client = garminconnect.Garmin()
-            client.login(self.tokens_path)
-            self._client = client
-            log.info("garmin.login_from_token")
-            return self._client
-        except Exception:
-            pass
-
-        # ── Fall back to credentials ───────────────────────────────────────
-        if not self.email or not self.password:
-            raise RuntimeError(
-                "No saved Garmin token found and no credentials configured. "
-                "Set GARMIN_EMAIL and GARMIN_PASSWORD in .env"
-            )
-
+        # Try token login first, fall back to credentials
         try:
             client = garminconnect.Garmin(
                 email=self.email,
                 password=self.password,
                 is_cn=self.is_cn,
             )
-            client.login()
-
-            # Save tokens for future runs
-            client.garth.dump(self.tokens_path)
+            client.login(tokenstore=self.tokens_path)
             self._client = client
-            log.info("garmin.login_success", email=self.email)
+            log.info("garmin.login_from_token")
             return self._client
-
         except Exception as e:
             log.error("garmin.login_failed", error=str(e))
             raise
@@ -108,7 +88,7 @@ class GarminSyncService:
             ("stress",          lambda: client.get_stress_data(d)),
             ("body_battery",    lambda: client.get_body_battery(d)),
             ("sleep",           lambda: client.get_sleep_data(d)),
-            ("calories",        lambda: client.get_calories_burned(d)),
+            ("calories",        lambda: client.get_daily_calories_burned(d) if hasattr(client, 'get_daily_calories_burned') else client.get_calories_burned(d) if hasattr(client, 'get_calories_burned') else None),
             ("training_ready",  lambda: client.get_training_readiness(d)),
         ]
 
