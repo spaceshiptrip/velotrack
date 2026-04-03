@@ -15,11 +15,9 @@ passlib[bcrypt]==1.7.4
 python-dotenv==1.0.1
 
 # Garmin
-# Pin withings-sync before 4.2.6 — versions 4.2.6+ have a broken build that fails
 # on Python 3.12 with a missing .VERSION file error.
-withings-sync==4.2.4
 garth==0.4.46
-garminconnect==0.2.19
+garminconnect==0.3.0
 
 # GPX / FIT parsing
 gpxpy==1.6.2

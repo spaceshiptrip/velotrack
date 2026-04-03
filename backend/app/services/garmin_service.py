@@ -53,17 +53,8 @@ class GarminSyncService:
                 email=self.email,
                 password=self.password,
                 is_cn=self.is_cn,
-                return_on_mfa=True,
             )
-            result = client.login()
-
-            # Handle MFA — in a server context we can't prompt interactively,
-            # so log a clear error if MFA is required
-            if isinstance(result, tuple) and result[0] == "needs_mfa":
-                raise RuntimeError(
-                    "Garmin account requires MFA. Run the import script interactively "
-                    "first to save tokens: python scripts/import_garmin.py"
-                )
+            client.login()
 
             # Save tokens for future runs
             client.garth.dump(self.tokens_path)

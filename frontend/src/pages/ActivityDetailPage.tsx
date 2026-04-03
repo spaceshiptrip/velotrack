@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
+import { useApi } from '../hooks/useApi'
 import { ArrowLeft, Map, BarChart2, List, Trophy, Zap } from 'lucide-react'
 import { useAppStore, useUnits } from '../store'
 import { Card, PageHeader, SectionHeader, StatTile, Badge, Spinner, HRZoneBar, PillSelect, Divider, EmptyState } from '../components/ui'
@@ -16,7 +16,7 @@ export default function ActivityDetailPage() {
   const navigate = useNavigate()
   const [tab, setTab] = useState<'overview' | 'map' | 'streams' | 'laps' | 'efforts'>('overview')
 
-  const api = axios.create({ baseURL: `${settings.apiUrl}/api/v1` })
+  const api = useApi()
 
   const { data: act, isLoading } = useQuery({
     queryKey: ['activity', id],

@@ -22,7 +22,7 @@ export default function SettingsPage() {
     setTesting(true)
     setTestResult(null)
     try {
-      const r = await axios.get(`${local.apiUrl}/health`, { timeout: 4000 })
+      const r = await (await import('axios')).default.get(`${local.apiUrl}/health`, { timeout: 4000 })
       setTestResult('✓ Connected — ' + (r.data?.version || 'OK'))
       setServerAvailable(true)
     } catch (e: any) {
