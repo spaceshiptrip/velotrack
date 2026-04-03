@@ -1,0 +1,46 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# Database
+sqlalchemy[asyncio]==2.0.35
+asyncpg==0.30.0
+alembic==1.13.3
+
+# Auth
+bcrypt==4.2.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.1
+
+# Garmin
+# Pin withings-sync before 4.2.6 — versions 4.2.6+ have a broken build that fails
+# on Python 3.12 with a missing .VERSION file error.
+withings-sync==4.2.4
+garth==0.4.46
+garminconnect==0.2.19
+
+# GPX / FIT parsing
+gpxpy==1.6.2
+fitparse==1.2.0
+lxml==5.3.0
+
+# Background tasks
+celery[redis]==5.4.0
+redis==5.1.0
+
+# HTTP client
+httpx==0.27.2
+aiohttp==3.10.10
+
+# Websockets
+websockets==13.1
+
+# Utilities
+pydantic==2.9.2
+pydantic-settings==2.5.2
+orjson==3.10.7
+python-dateutil==2.9.0
+pytz==2024.2
+structlog==24.4.0

@@ -1,0 +1,35 @@
+# docker-compose.dev.yml — overlay for local development
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app          # live-reload source
+      - fit_files:/app/fit_files
+      - garmin_tokens:/app/garmin_tokens
+    environment:
+      DEBUG: "true"
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install -g pnpm && pnpm install && pnpm dev --host 0.0.0.0"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules        # anonymous volume hides host node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    command: celery -A app.workers.celery_app worker --loglevel=debug -c 1
+    volumes:
+      - ./backend:/app

@@ -1,0 +1,114 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: velotrack
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-velotrack_secret}
+      POSTGRES_DB: velotrack
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U velotrack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://velotrack:${DB_PASSWORD:-velotrack_secret}@db/velotrack
+      REDIS_URL: redis://redis:6379
+      BROUTER_ENDPOINT: http://brouter:17777
+    ports:
+      - "8000:8000"
+    volumes:
+      - fit_files:/app/fit_files
+      - garmin_tokens:/app/garmin_tokens
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
+        VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN:-}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8081}:80"
+    depends_on:
+      - backend
+
+  brouter:
+    build:
+      context: docker/brouter
+      dockerfile: Dockerfile
+    # amazoncorretto:17-alpine supports amd64 + arm64
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "17777:17777"
+    volumes:
+      - brouter_segments:/brouter/segments
+      - brouter_profiles:/brouter/profiles
+    environment:
+      JAVA_OPTS: "-Xmx512m -Xms128m"
+    # BRouter is optional — backend degrades gracefully if offline
+    profiles:
+      - routing
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info -c 2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://velotrack:${DB_PASSWORD:-velotrack_secret}@db/velotrack
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - fit_files:/app/fit_files
+      - garmin_tokens:/app/garmin_tokens
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    depends_on:
+      - redis
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://velotrack:${DB_PASSWORD:-velotrack_secret}@db/velotrack
+      REDIS_URL: redis://redis:6379
+
+volumes:
+  db_data:
+  redis_data:
+  fit_files:
+  garmin_tokens:
+  brouter_segments:
+  brouter_profiles:
