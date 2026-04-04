@@ -1,11 +1,11 @@
-import { useState, useCallback, useRef } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
-import { Upload, CheckCircle, XCircle, ChevronRight, RefreshCw } from 'lucide-react'
+import { Upload, CheckCircle, XCircle, ChevronRight, RefreshCw, AlertCircle, CalendarRange, History } from 'lucide-react'
 import { useAppStore } from '../store'
 import { Card, PageHeader, SectionHeader, StatTile, Spinner, EmptyState } from '../components/ui'
-import { formatDuration, formatDate, activityIcon, activityLabel } from '../utils/format'
+import { formatDuration, formatDate, activityIcon } from '../utils/format'
 
 function getToken() {
   return localStorage.getItem('velotrack_token') || ''
@@ -19,7 +19,20 @@ export default function UploadPage() {
   const [results, setResults] = useState<Array<{ file: string; status: 'success' | 'error' | 'pending'; id?: number; error?: string }>>([])
   const [localAnalysis, setLocalAnalysis] = useState<any>(null)
   const [localAnalyzing, setLocalAnalyzing] = useState(false)
+  const [syncMode, setSyncMode] = useState<'range' | 'backfill'>('range')
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [syncError, setSyncError] = useState<string | null>(null)
+  const [authMessage, setAuthMessage] = useState<string | null>(null)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [mfaSessionId, setMfaSessionId] = useState<string | null>(null)
+  const [mfaCode, setMfaCode] = useState('')
+  const [garminEmail, setGarminEmail] = useState('')
+  const [garminPassword, setGarminPassword] = useState('')
+  const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0])
+  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0])
+  const [backfillDays, setBackfillDays] = useState('365')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const lastSyncStateRef = useRef<string | null>(null)
 
   const api = axios.create({
     baseURL: `${settings.apiUrl}/api/v1`,
@@ -50,6 +63,115 @@ export default function UploadPage() {
       qc.invalidateQueries({ queryKey: ['activities'] })
     },
   })
+
+  const hasToken = !!getToken()
+  const shouldPollSync = isServerAvailable && hasToken
+
+  const { data: authStatus, refetch: refetchAuthStatus } = useQuery({
+    queryKey: ['garmin-auth-status'],
+    queryFn: () => api.get('/sync/auth-status').then(r => r.data as { authenticated: boolean; message?: string | null }),
+    enabled: shouldPollSync,
+    refetchInterval: mfaSessionId ? false : 300000,
+  })
+
+  const { data: syncStatus } = useQuery({
+    queryKey: ['sync-status'],
+    queryFn: () => api.get('/sync/status').then(r => r.data as { status: string; last_sync?: string | null; message?: string | null }),
+    enabled: shouldPollSync,
+    refetchInterval: (query) => query.state.data?.status === 'running' ? 3000 : 15000,
+  })
+
+  const startAuthMutation = useMutation({
+    mutationFn: async () => api.post('/sync/auth/start', {
+      email: garminEmail.trim() || undefined,
+      password: garminPassword || undefined,
+    }),
+    onSuccess: async (response) => {
+      setAuthError(null)
+      setAuthMessage(response.data?.message || 'Garmin authentication started')
+      if (response.data?.status === 'needs_mfa') {
+        setMfaSessionId(response.data.session_id || null)
+      } else {
+        setMfaSessionId(null)
+        setMfaCode('')
+      }
+      await refetchAuthStatus()
+    },
+    onError: (e: any) => {
+      setAuthError(e.response?.data?.detail || e.message || 'Garmin authentication failed')
+    },
+  })
+
+  const verifyAuthMutation = useMutation({
+    mutationFn: async () => api.post('/sync/auth/verify', { session_id: mfaSessionId, mfa_code: mfaCode }),
+    onSuccess: async (response) => {
+      setAuthError(null)
+      setAuthMessage(response.data?.message || 'Garmin authentication complete')
+      setMfaSessionId(null)
+      setMfaCode('')
+      await refetchAuthStatus()
+    },
+    onError: (e: any) => {
+      setAuthError(e.response?.data?.detail || e.message || 'Garmin MFA verification failed')
+    },
+  })
+
+  const rangeSyncMutation = useMutation({
+    mutationFn: async () => {
+      return api.post('/sync/trigger', { start_date: startDate, end_date: endDate })
+    },
+    onSuccess: (response) => {
+      setSyncError(null)
+      setSyncMessage(response.data?.message || 'Sync started')
+    },
+    onError: (e: any) => {
+      setSyncError(e.response?.data?.detail || e.message || 'Sync failed')
+    },
+  })
+
+  const backfillMutation = useMutation({
+    mutationFn: async () => {
+      const days = Math.max(1, Number(backfillDays) || 365)
+      return api.post(`/sync/backfill?days=${days}`)
+    },
+    onSuccess: (response) => {
+      setSyncError(null)
+      setSyncMessage(response.data?.message || 'Backfill started')
+    },
+    onError: (e: any) => {
+      setSyncError(e.response?.data?.detail || e.message || 'Backfill failed')
+    },
+  })
+
+  useEffect(() => {
+    if (!syncStatus) return
+    if (syncStatus.status === 'error') {
+      setSyncError(syncStatus.message || 'Sync failed')
+      lastSyncStateRef.current = syncStatus.status
+      return
+    }
+    if (syncStatus.status === 'running') {
+      setSyncError(null)
+      setSyncMessage(syncStatus.message || 'Sync running…')
+      lastSyncStateRef.current = syncStatus.status
+      return
+    }
+    if (syncStatus.status === 'idle') {
+      setSyncError(null)
+      if (lastSyncStateRef.current === 'running' || lastSyncStateRef.current === 'error') {
+        setSyncMessage(syncStatus.message || 'Sync complete')
+        qc.invalidateQueries({ queryKey: ['activities'] })
+        qc.invalidateQueries({ queryKey: ['dashboard'] })
+      }
+      lastSyncStateRef.current = syncStatus.status
+    }
+  }, [qc, syncStatus])
+
+  useEffect(() => {
+    if (!authStatus || mfaSessionId) return
+    setAuthError(null)
+    setAuthMessage(authStatus.message || (authStatus.authenticated ? 'Saved Garmin tokens are valid.' : 'Garmin is not authenticated.'))
+  }, [authStatus, mfaSessionId])
 
   async function analyzeLocal(file: File) {
     setLocalAnalyzing(true)
@@ -114,8 +236,7 @@ export default function UploadPage() {
     e.preventDefault(); setDragOver(false)
     handleFiles(Array.from(e.dataTransfer.files))
   }, [isServerAvailable])
-
-  const hasToken = !!getToken()
+  const syncPending = rangeSyncMutation.isPending || backfillMutation.isPending || syncStatus?.status === 'running'
 
   return (
     <div style={{ padding: 28 }}>
@@ -225,21 +346,227 @@ export default function UploadPage() {
               Auto-sync from Garmin Connect runs every 30 min when credentials are configured.
             </div>
             {isServerAvailable && hasToken ? (
-              <button
-                onClick={async () => {
-                  try {
-                    await api.post('/sync/trigger', {
-                      start_date: new Date(Date.now() - 30*86400000).toISOString().split('T')[0],
-                    })
-                    alert('Sync started!')
-                  } catch(e: any) {
-                    alert(e.response?.data?.detail || 'Sync failed — check Garmin credentials in .env')
-                  }
-                }}
-                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer' }}
-              >
-                <RefreshCw size={14} /> Sync Last 30 Days
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${syncStatus?.status === 'error' ? '#ef444440' : syncStatus?.status === 'running' ? 'var(--accent-dim)' : 'var(--border)'}`,
+                  background: syncStatus?.status === 'error' ? '#ef444415' : 'var(--bg-elevated)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    {syncStatus?.status === 'error'
+                      ? <AlertCircle size={14} color="#ef4444" />
+                      : <RefreshCw size={14} style={{ animation: syncStatus?.status === 'running' ? 'spin 1s linear infinite' : 'none' }} color={syncStatus?.status === 'running' ? 'var(--accent)' : 'var(--text-muted)'} />}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: syncStatus?.status === 'error' ? '#ef4444' : 'var(--text-primary)' }}>
+                      {syncStatus?.status === 'running' ? 'Sync in progress' : syncStatus?.status === 'error' ? 'Sync failed' : 'Sync idle'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: syncStatus?.status === 'error' ? '#fca5a5' : 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {syncError || syncMessage || syncStatus?.message || 'No sync activity yet.'}
+                  </div>
+                  {syncStatus?.last_sync && (
+                    <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                      Last completed: {formatDate(syncStatus.last_sync, 'datetime')}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${authError ? '#ef444440' : authStatus?.authenticated ? 'var(--accent-dim)' : 'var(--border)'}`,
+                  background: authError ? '#ef444415' : 'var(--bg-elevated)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    {authError
+                      ? <AlertCircle size={14} color="#ef4444" />
+                      : <RefreshCw size={14} color={authStatus?.authenticated ? 'var(--accent)' : 'var(--text-muted)'} style={{ animation: startAuthMutation.isPending || verifyAuthMutation.isPending ? 'spin 1s linear infinite' : 'none' }} />}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: authError ? '#ef4444' : 'var(--text-primary)' }}>
+                      {mfaSessionId ? 'Garmin MFA Required' : authStatus?.authenticated ? 'Garmin Authenticated' : 'Garmin Authentication Needed'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: authError ? '#fca5a5' : 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {authError || authMessage || 'Authenticate Garmin to save reusable tokens for sync.'}
+                  </div>
+                  {!mfaSessionId ? (
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <input
+                        value={garminEmail}
+                        onChange={e => setGarminEmail(e.target.value)}
+                        placeholder="Garmin email (optional if set in .env)"
+                        autoComplete="username"
+                        style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 13 }}
+                      />
+                      <input
+                        type="password"
+                        value={garminPassword}
+                        onChange={e => setGarminPassword(e.target.value)}
+                        placeholder="Garmin password (optional if set in .env)"
+                        autoComplete="current-password"
+                        style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 13 }}
+                      />
+                      <button
+                        onClick={() => startAuthMutation.mutate()}
+                        disabled={startAuthMutation.isPending || verifyAuthMutation.isPending}
+                        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: startAuthMutation.isPending || verifyAuthMutation.isPending ? 'not-allowed' : 'pointer', opacity: startAuthMutation.isPending || verifyAuthMutation.isPending ? 0.7 : 1 }}
+                      >
+                        <RefreshCw size={14} style={{ animation: startAuthMutation.isPending ? 'spin 1s linear infinite' : 'none' }} />
+                        {authStatus?.authenticated ? 'Re-authenticate Garmin' : 'Authenticate Garmin'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <input
+                        value={mfaCode}
+                        onChange={e => setMfaCode(e.target.value)}
+                        placeholder="Enter MFA code from Garmin email"
+                        style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 13 }}
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          onClick={() => verifyAuthMutation.mutate()}
+                          disabled={verifyAuthMutation.isPending || !mfaCode.trim()}
+                          style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: verifyAuthMutation.isPending || !mfaCode.trim() ? 'not-allowed' : 'pointer', opacity: verifyAuthMutation.isPending || !mfaCode.trim() ? 0.7 : 1 }}
+                        >
+                          <RefreshCw size={14} style={{ animation: verifyAuthMutation.isPending ? 'spin 1s linear infinite' : 'none' }} />
+                          {verifyAuthMutation.isPending ? 'Verifying…' : 'Verify Code'}
+                        </button>
+                        <button
+                          onClick={() => { setMfaSessionId(null); setMfaCode(''); setAuthError(null) }}
+                          disabled={verifyAuthMutation.isPending}
+                          style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', fontSize: 13, cursor: verifyAuthMutation.isPending ? 'not-allowed' : 'pointer' }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    onClick={() => setSyncMode('range')}
+                    style={{
+                      flex: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      border: '1px solid',
+                      borderColor: syncMode === 'range' ? 'var(--accent)' : 'var(--border)',
+                      background: syncMode === 'range' ? 'var(--accent-dim)' : 'transparent',
+                      color: syncMode === 'range' ? 'var(--accent)' : 'var(--text-secondary)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <CalendarRange size={13} /> Date Range
+                  </button>
+                  <button
+                    onClick={() => setSyncMode('backfill')}
+                    style={{
+                      flex: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      border: '1px solid',
+                      borderColor: syncMode === 'backfill' ? 'var(--accent)' : 'var(--border)',
+                      background: syncMode === 'backfill' ? 'var(--accent-dim)' : 'transparent',
+                      color: syncMode === 'backfill' ? 'var(--accent)' : 'var(--text-secondary)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <History size={13} /> Backfill
+                  </button>
+                </div>
+
+                {syncMode === 'range' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Start</span>
+                        <input
+                          type="date"
+                          value={startDate}
+                          max={endDate}
+                          onChange={e => setStartDate(e.target.value)}
+                          style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 12 }}
+                        />
+                      </label>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>End</span>
+                        <input
+                          type="date"
+                          value={endDate}
+                          min={startDate}
+                          max={new Date().toISOString().split('T')[0]}
+                          onChange={e => setEndDate(e.target.value)}
+                          style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 12 }}
+                        />
+                      </label>
+                    </div>
+                    <button
+                      onClick={() => rangeSyncMutation.mutate()}
+                      disabled={syncPending || !startDate || !endDate}
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: syncPending ? 'not-allowed' : 'pointer', opacity: syncPending ? 0.7 : 1 }}
+                    >
+                      <RefreshCw size={14} style={{ animation: syncPending ? 'spin 1s linear infinite' : 'none' }} />
+                      {syncPending ? 'Syncing…' : 'Sync Selected Range'}
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Backfill Days</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={backfillDays}
+                        onChange={e => setBackfillDays(e.target.value)}
+                        style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 12 }}
+                      />
+                    </label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {[90, 365, 730].map(days => (
+                        <button
+                          key={days}
+                          onClick={() => setBackfillDays(String(days))}
+                          style={{
+                            flex: 1,
+                            padding: '7px 8px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border)',
+                            background: backfillDays === String(days) ? 'var(--accent-dim)' : 'transparent',
+                            color: backfillDays === String(days) ? 'var(--accent)' : 'var(--text-secondary)',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {days}d
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => backfillMutation.mutate()}
+                      disabled={syncPending || !(Number(backfillDays) > 0)}
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: syncPending ? 'not-allowed' : 'pointer', opacity: syncPending ? 0.7 : 1 }}
+                    >
+                      <RefreshCw size={14} style={{ animation: syncPending ? 'spin 1s linear infinite' : 'none' }} />
+                      {syncPending ? 'Backfilling…' : `Backfill ${Math.max(1, Number(backfillDays) || 365)} Days`}
+                    </button>
+                  </div>
+                )}
+              </div>
             ) : (
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Sign in to enable sync.</div>
             )}

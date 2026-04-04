@@ -1,6 +1,8 @@
 """Garmin sync control endpoints."""
 from datetime import date, datetime, timedelta
 from typing import Optional
+import os
+import uuid
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,12 +28,159 @@ class SyncStatus(BaseModel):
     message: Optional[str] = None
 
 
+class GarminAuthStartRequest(BaseModel):
+    email: Optional[str] = None
+    password: Optional[str] = None
+
+
+class GarminAuthVerifyRequest(BaseModel):
+    session_id: str
+    mfa_code: str
+
+
 _sync_status = {"status": "idle", "last_sync": None, "message": None}
+_garmin_auth_sessions = {}
+_garmin_auth_status_cache = {
+    "checked_at": None,
+    "authenticated": False,
+    "message": None,
+}
 
 
 @router.get("/status", response_model=SyncStatus)
 async def sync_status():
     return _sync_status
+
+
+@router.get("/auth-status")
+async def garmin_auth_status():
+    token_files = [
+        name for name in ("oauth1_token.json", "oauth2_token.json")
+        if os.path.exists(os.path.join(settings.garmin_tokens_path, name))
+    ]
+    if not token_files:
+        return {
+            "authenticated": False,
+            "message": f"No Garmin tokens found in {settings.garmin_tokens_path}",
+        }
+
+    # Avoid repeatedly logging into Garmin just to paint the UI.
+    if (
+        _garmin_auth_status_cache["checked_at"] is not None
+        and datetime.utcnow() - _garmin_auth_status_cache["checked_at"] < timedelta(minutes=10)
+    ):
+        return {
+            "authenticated": _garmin_auth_status_cache["authenticated"],
+            "message": _garmin_auth_status_cache["message"],
+        }
+
+    try:
+        import garminconnect
+        client = garminconnect.Garmin()
+        client.login(settings.garmin_tokens_path)
+        _garmin_auth_status_cache.update({
+            "checked_at": datetime.utcnow(),
+            "authenticated": True,
+            "message": "Saved Garmin tokens are valid.",
+        })
+        return {
+            "authenticated": True,
+            "message": "Saved Garmin tokens are valid.",
+        }
+    except Exception as e:
+        _garmin_auth_status_cache.update({
+            "checked_at": datetime.utcnow(),
+            "authenticated": False,
+            "message": f"Saved Garmin tokens exist but login failed: {e}",
+        })
+        return {
+            "authenticated": False,
+            "message": f"Saved Garmin tokens exist but login failed: {e}",
+        }
+
+
+@router.post("/auth/start")
+async def start_garmin_auth(
+    req: GarminAuthStartRequest,
+    user: User = Depends(get_current_user),
+):
+    try:
+        import garminconnect
+    except ImportError:
+        raise HTTPException(500, "garminconnect not installed")
+
+    os.makedirs(settings.garmin_tokens_path, exist_ok=True)
+
+    try:
+        client = garminconnect.Garmin()
+        client.login(settings.garmin_tokens_path)
+        return {"status": "authenticated", "message": "Saved Garmin tokens are already valid."}
+    except Exception:
+        pass
+
+    email = req.email or settings.garmin_email
+    password = req.password or settings.garmin_password
+    if not email or not password:
+        raise HTTPException(400, "Garmin credentials are not configured. Set GARMIN_EMAIL and GARMIN_PASSWORD or provide them here.")
+
+    try:
+        client = garminconnect.Garmin(
+            email=email,
+            password=password,
+            is_cn=settings.garmin_is_cn,
+            return_on_mfa=True,
+        )
+        result = client.login()
+        if isinstance(result, tuple) and result[0] == "needs_mfa":
+            session_id = str(uuid.uuid4())
+            _garmin_auth_sessions[session_id] = {
+                "client": client,
+                "challenge": result[1],
+                "created_at": datetime.utcnow(),
+                "user_id": user.id,
+            }
+            return {
+                "status": "needs_mfa",
+                "session_id": session_id,
+                "message": "Garmin requested an MFA code. Check your email, then paste the code here.",
+            }
+
+        client.garth.dump(settings.garmin_tokens_path)
+        _garmin_auth_status_cache.update({
+            "checked_at": datetime.utcnow(),
+            "authenticated": True,
+            "message": f"Garmin authenticated. Tokens saved to {settings.garmin_tokens_path}.",
+        })
+        return {"status": "authenticated", "message": f"Garmin authenticated. Tokens saved to {settings.garmin_tokens_path}."}
+    except Exception as e:
+        raise HTTPException(400, f"Garmin authentication failed: {e}")
+
+
+@router.post("/auth/verify")
+async def verify_garmin_auth(
+    req: GarminAuthVerifyRequest,
+    user: User = Depends(get_current_user),
+):
+    session = _garmin_auth_sessions.get(req.session_id)
+    if not session or session.get("user_id") != user.id:
+        raise HTTPException(404, "Garmin authentication session not found or expired.")
+
+    if datetime.utcnow() - session["created_at"] > timedelta(minutes=10):
+        _garmin_auth_sessions.pop(req.session_id, None)
+        raise HTTPException(410, "Garmin authentication session expired. Start again.")
+
+    try:
+        session["client"].resume_login(session["challenge"], req.mfa_code.strip())
+        session["client"].garth.dump(settings.garmin_tokens_path)
+        _garmin_auth_status_cache.update({
+            "checked_at": datetime.utcnow(),
+            "authenticated": True,
+            "message": f"Garmin authenticated. Tokens saved to {settings.garmin_tokens_path}.",
+        })
+        _garmin_auth_sessions.pop(req.session_id, None)
+        return {"status": "authenticated", "message": f"Garmin authenticated. Tokens saved to {settings.garmin_tokens_path}."}
+    except Exception as e:
+        raise HTTPException(400, f"Garmin MFA verification failed: {e}")
 
 
 @router.post("/trigger")
@@ -42,8 +191,6 @@ async def trigger_sync(
     user: User = Depends(get_current_user),
 ):
     """Manually trigger a Garmin sync."""
-    if not settings.garmin_email or not settings.garmin_password:
-        raise HTTPException(400, "Garmin credentials not configured. Set GARMIN_EMAIL and GARMIN_PASSWORD.")
     if _sync_status["status"] == "running":
         raise HTTPException(409, "Sync already in progress")
 
@@ -168,9 +315,12 @@ async def _upsert_activity(db, user_id, act_data, svc):
             pass
 
     activity = Activity(user_id=user_id, start_time=start_time)
-    for field in act_data:
-        if hasattr(activity, field) and act_data[field] is not None:
-            setattr(activity, field, act_data[field])
+    for field, value in act_data.items():
+        if value is None or not hasattr(activity, field):
+            continue
+        if field == "start_time":
+            continue
+        setattr(activity, field, value)
     db.add(activity)
     await db.flush()
 
@@ -189,5 +339,14 @@ async def _upsert_activity(db, user_id, act_data, svc):
                 activity.laps = detailed.get("laps")
                 activity.best_efforts = detailed.get("best_efforts")
                 activity.power_curve = detailed.get("power_curve")
+                activity.sport_details = detailed.get("sport_details")
+                activity.sport_streams = detailed.get("sport_streams")
+                # Recompute derived stats from the richer FIT detail payload,
+                # including HR zone durations.
+                from app.services.stats_engine import compute_activity_stats
+                derived = compute_activity_stats(detailed)
+                for field, value in derived.items():
+                    if hasattr(activity, field) and value is not None:
+                        setattr(activity, field, value)
         except Exception:
             pass

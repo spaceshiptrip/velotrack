@@ -9,7 +9,7 @@ services:
     volumes:
       - ./backend:/app          # live-reload source
       - fit_files:/app/fit_files
-      - garmin_tokens:/app/garmin_tokens
+      - ./garmin_tokens:/app/garmin_tokens
     environment:
       DEBUG: "true"
 
@@ -33,3 +33,4 @@ services:
     command: celery -A app.workers.celery_app worker --loglevel=debug -c 1
     volumes:
       - ./backend:/app
+      - ./garmin_tokens:/app/garmin_tokens

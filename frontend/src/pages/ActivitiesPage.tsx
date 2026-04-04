@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import { useUnits } from '../store'
 import { Card, PageHeader, Spinner, EmptyState } from '../components/ui'
@@ -23,6 +23,7 @@ const PER_PAGE = 25
 
 export default function ActivitiesPage() {
   const api = useApi()
+  const qc = useQueryClient()
   const { distance, elevation, pace, speed } = useUnits()
   const navigate = useNavigate()
   const [page, setPage] = useState(1)
@@ -38,7 +39,26 @@ export default function ActivitiesPage() {
     retry: false,
   })
 
+  const deleteMutation = useMutation({
+    mutationFn: async (activityId: number) => {
+      await api.delete(`/activities/${activityId}`)
+    },
+    onSuccess: async (_, activityId) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['activities'] }),
+        qc.invalidateQueries({ queryKey: ['activity', String(activityId)] }),
+        qc.invalidateQueries({ queryKey: ['streams', String(activityId)] }),
+      ])
+    },
+  })
+
   const totalPages = data ? Math.ceil(data.total / PER_PAGE) : 1
+
+  function handleDelete(activityId: number, activityName: string) {
+    if (deleteMutation.isPending) return
+    if (!window.confirm(`Delete "${activityName}"? This cannot be undone.`)) return
+    deleteMutation.mutate(activityId)
+  }
 
   return (
     <div style={{ padding: 28 }}>
@@ -79,7 +99,7 @@ export default function ActivitiesPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Activity', 'Date', 'Distance', 'Time', 'Pace', 'HR', 'Elev+', 'TSS'].map(h => (
+                  {['Activity', 'Date', 'Distance', 'Time', 'Pace', 'HR', 'Elev+', 'TSS', ''].map(h => (
                     <th key={h} style={{ padding: '10px 16px', textAlign: h === 'Activity' ? 'left' : 'right', fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{h}</th>
                   ))}
                 </tr>
@@ -108,6 +128,31 @@ export default function ActivitiesPage() {
                     <td style={{ padding: '12px 16px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 13, color: '#ef4444' }}>{act.avg_hr ? `${Math.round(act.avg_hr)}` : '—'}</td>
                     <td style={{ padding: '12px 16px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 13, color: '#a855f7' }}>{act.elevation_gain_m ? elevation(act.elevation_gain_m) : '—'}</td>
                     <td style={{ padding: '12px 16px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 13, color: '#f97316' }}>{act.tss ? act.tss.toFixed(0) : '—'}</td>
+                    <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleDelete(act.id, act.name)
+                        }}
+                        disabled={deleteMutation.isPending}
+                        aria-label={`Delete ${act.name}`}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: 30,
+                          height: 30,
+                          borderRadius: 8,
+                          border: '1px solid #ef444440',
+                          background: 'transparent',
+                          color: '#ef4444',
+                          cursor: deleteMutation.isPending ? 'not-allowed' : 'pointer',
+                          opacity: deleteMutation.isPending ? 0.7 : 1,
+                        }}
+                      >
+                        {deleteMutation.isPending ? <Spinner size={14} /> : <Trash2 size={14} />}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

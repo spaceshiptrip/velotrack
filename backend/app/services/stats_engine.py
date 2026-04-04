@@ -446,6 +446,7 @@ def compute_activity_stats(
     resting_hr = (athlete or {}).get("resting_hr", 50)
     ftp = (athlete or {}).get("ftp_watts", 200)
     lthr = (athlete or {}).get("lthr") or max_hr * LTHR_PCT
+    hr_stream = activity.get("hr_stream") or []
 
     # Pace
     if distance > 0 and duration > 0:
@@ -469,6 +470,16 @@ def compute_activity_stats(
         stats["intensity_factor"] = round(np_watts / ftp, 3)
     else:
         stats["tss"] = stats.get("tss_hr", 0)
+
+    # HR zone time
+    if hr_stream:
+        zones = hr_zones_from_lthr(lthr) if lthr else hr_zones_from_max(int(max_hr))
+        zone_seconds = time_in_hr_zones(hr_stream, zones)
+        stats["hr_zone_1_seconds"] = round(zone_seconds.get("z1", 0.0), 1)
+        stats["hr_zone_2_seconds"] = round(zone_seconds.get("z2", 0.0), 1)
+        stats["hr_zone_3_seconds"] = round(zone_seconds.get("z3", 0.0), 1)
+        stats["hr_zone_4_seconds"] = round(zone_seconds.get("z4", 0.0), 1)
+        stats["hr_zone_5_seconds"] = round(zone_seconds.get("z5", 0.0), 1)
 
     # VAM
     ele_gain = activity.get("elevation_gain_m", 0) or 0

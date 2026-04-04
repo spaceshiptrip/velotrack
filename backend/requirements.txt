@@ -15,9 +15,9 @@ passlib[bcrypt]==1.7.4
 python-dotenv==1.0.1
 
 # Garmin
-# on Python 3.12 with a missing .VERSION file error.
-garth==0.4.46
-garminconnect==0.3.0
+# Match the known-good downloader environment so saved oauth1/oauth2 token files
+# in ./garmin_tokens can be reused by the backend containers.
+garminconnect==0.2.40
 
 # GPX / FIT parsing
 gpxpy==1.6.2

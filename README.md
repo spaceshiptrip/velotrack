@@ -125,3 +125,72 @@ The frontend can run **without any backend**. Just:
 - [BRouter Setup](docs/brouter.md)
 - [Real-time Tracking](docs/realtime.md)
 - [GitHub Pages Deploy](docs/gh-pages.md)
+
+---
+
+## 🚀 Personal Server Deployment Notes
+
+You can deploy this project to your own server with plain `docker compose`.
+
+Keep a persistent `garmin_tokens/` directory in the repo root, next to `docker-compose.yml`:
+
+```text
+velotrack/
+├── docker-compose.yml
+├── docker-compose.dev.yml
+├── garmin_tokens/
+└── ...
+```
+
+That directory is bind-mounted into the backend containers and is where Garmin authentication tokens are stored and refreshed.
+
+### Recommended Server Setup
+
+```bash
+git clone <your-repo-url>
+cd velotrack
+cp .env.example .env
+mkdir -p garmin_tokens
+docker compose up -d --build
+```
+
+### Garmin Authentication on a Server
+
+The app supports Garmin's 2-step login flow:
+
+1. Enter Garmin username and password in the app UI
+2. Garmin sends an MFA code
+3. Paste the MFA code into the app
+4. The app saves reusable Garmin tokens into `./garmin_tokens`
+
+After that, normal syncs should reuse the saved tokens without requiring you to log in each time.
+
+### When Tokens Expire
+
+If Garmin invalidates the saved tokens later:
+
+1. Open the app
+2. Re-authenticate Garmin in the UI
+3. Complete the MFA step again if prompted
+4. New tokens will be saved to `./garmin_tokens`
+
+You should not need to keep using an external downloader script and manually copying tokens during normal operation.
+
+### Existing Tokens From Another Machine
+
+You can optionally copy an existing Garmin token set from another machine:
+
+```bash
+mkdir -p garmin_tokens
+cp ~/.garminconnect/oauth1_token.json ./garmin_tokens/
+cp ~/.garminconnect/oauth2_token.json ./garmin_tokens/
+```
+
+This is optional. The server can also generate its own fresh tokens through the app UI.
+
+### Important Notes
+
+- Do not bake Garmin tokens into Docker images.
+- Do not commit `garmin_tokens/` to git.
+- Keep `garmin_tokens/` on persistent storage so tokens survive restarts and rebuilds.
+- Store Garmin credentials in `.env` if you want the server to use them as the default login fallback.

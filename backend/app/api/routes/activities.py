@@ -1,6 +1,7 @@
 """Activities CRUD and analytics endpoints."""
 from typing import Optional
 from datetime import datetime, date
+import math
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,7 @@ from sqlalchemy import select, func, and_, desc
 from app.core.database import get_db
 from app.models.models import Activity, User
 from app.api.deps import get_current_user
+from app.services.file_parser import _generate_default_laps, _supports_default_mile_laps
 
 router = APIRouter()
 
@@ -110,6 +112,8 @@ async def get_activity(
 async def get_streams(
     activity_id: int,
     streams: str = Query("hr,pace,power,elevation,gps"),
+    gps_mode: str = Query("full", pattern="^(full|downsampled)$"),
+    gps_max_points: int = Query(2000, ge=100, le=10000),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -120,15 +124,24 @@ async def get_streams(
     if "pace" in requested: result["pace"] = activity.pace_stream or []
     if "power" in requested: result["power"] = activity.power_stream or []
     if "elevation" in requested: result["elevation"] = activity.elevation_stream or []
-    if "gps" in requested: result["gps"] = activity.gps_track or []
+    if "gps" in requested:
+        gps_track = activity.gps_track or []
+        gps_points, gps_meta = _prepare_gps_stream(gps_track, gps_mode, gps_max_points)
+        result["gps"] = gps_points
+        result["gps_meta"] = gps_meta
     if "cadence" in requested: result["cadence"] = activity.cadence_stream or []
+    if "sport" in requested: result["sport"] = activity.sport_streams or {}
     return result
 
 
 @router.get("/{activity_id}/laps")
 async def get_laps(activity_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     activity = await _get_or_404(db, activity_id, user.id)
-    return activity.laps or []
+    if activity.laps:
+        return activity.laps
+    if activity.gps_track and _supports_default_mile_laps(activity.activity_type):
+        return _generate_default_laps(activity.gps_track)
+    return []
 
 
 @router.get("/{activity_id}/best-efforts")
@@ -177,6 +190,30 @@ def _summary(a):
     }
 
 
+def _prepare_gps_stream(gps_track, gps_mode: str, gps_max_points: int):
+    total_points = len(gps_track)
+    if gps_mode != "downsampled" or total_points <= gps_max_points:
+        return gps_track, {
+            "mode": "full",
+            "total_points": total_points,
+            "returned_points": total_points,
+            "downsampled": False,
+        }
+
+    step = max(1, math.ceil(total_points / gps_max_points))
+    sampled = gps_track[::step]
+    if sampled and sampled[-1] != gps_track[-1]:
+        sampled.append(gps_track[-1])
+
+    return sampled, {
+        "mode": "downsampled",
+        "total_points": total_points,
+        "returned_points": len(sampled),
+        "downsampled": True,
+        "step": step,
+    }
+
+
 def _detail(a):
     return {**_summary(a), "sub_type": a.sub_type, "timezone": a.timezone,
             "elapsed_seconds": a.elapsed_seconds, "moving_seconds": a.moving_seconds,
@@ -196,4 +233,5 @@ def _detail(a):
             "hr_zone_5_seconds": a.hr_zone_5_seconds,
             "training_load_acute": a.training_load_acute, "training_load_chronic": a.training_load_chronic,
             "bounding_box": a.bounding_box, "source": a.source,
+            "sport_details": a.sport_details, "sport_streams": a.sport_streams,
             "created_at": a.created_at.isoformat() if a.created_at else None}

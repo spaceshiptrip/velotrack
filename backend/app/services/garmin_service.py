@@ -31,16 +31,36 @@ class GarminSyncService:
 
         os.makedirs(self.tokens_path, exist_ok=True)
 
-        # Try token login first, fall back to credentials
+        # Match the known-good flow from the standalone downloader:
+        # try token login with a bare Garmin client first, then fall back to credentials.
+        try:
+            client = garminconnect.Garmin()
+            client.login(self.tokens_path)
+            self._client = client
+            log.info("garmin.login_from_token")
+            return self._client
+        except Exception as e:
+            log.warning("garmin.token_login_failed", error=str(e), tokens_path=self.tokens_path)
+
+        if not self.email or not self.password:
+            raise RuntimeError(
+                f"Garmin token login failed and no GARMIN_EMAIL/GARMIN_PASSWORD fallback is configured. "
+                f"Expected tokens at {self.tokens_path}."
+            )
+
         try:
             client = garminconnect.Garmin(
                 email=self.email,
                 password=self.password,
                 is_cn=self.is_cn,
             )
-            client.login(tokenstore=self.tokens_path)
+            client.login()
+            try:
+                client.garth.dump(self.tokens_path)
+            except Exception as dump_error:
+                log.warning("garmin.token_dump_failed", error=str(dump_error), tokens_path=self.tokens_path)
             self._client = client
-            log.info("garmin.login_from_token")
+            log.info("garmin.login_from_credentials")
             return self._client
         except Exception as e:
             log.error("garmin.login_failed", error=str(e))
@@ -195,12 +215,16 @@ class GarminSyncService:
             from dateutil.parser import parse
             start = parse(start)
 
+        timezone = raw.get("timeZoneId")
+        if timezone is not None:
+            timezone = str(timezone)
+
         return {
             "garmin_activity_id": str(raw.get("activityId", "")),
             "name": raw.get("activityName", "Activity"),
             "activity_type": act_type,
             "start_time": start.isoformat() if start else None,
-            "timezone": raw.get("timeZoneId"),
+            "timezone": timezone,
             "duration_seconds": raw.get("duration"),
             "elapsed_seconds": raw.get("elapsedDuration"),
             "moving_seconds": raw.get("movingDuration"),

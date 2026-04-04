@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useApi } from '../hooks/useApi'
-import { ArrowLeft, Map, BarChart2, List, Trophy, Zap } from 'lucide-react'
+import { ArrowLeft, Map, BarChart2, List, Trophy, Zap, Trash2 } from 'lucide-react'
 import { useAppStore, useUnits } from '../store'
 import { Card, PageHeader, SectionHeader, StatTile, Badge, Spinner, HRZoneBar, PillSelect, Divider, EmptyState } from '../components/ui'
 import { HRStreamChart, PaceStreamChart, PowerStreamChart, ElevationStreamChart, PowerCurveChart } from '../components/charts'
@@ -14,7 +14,10 @@ export default function ActivityDetailPage() {
   const { settings } = useAppStore()
   const { distance, elevation, speed, pace } = useUnits()
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const [tab, setTab] = useState<'overview' | 'map' | 'streams' | 'laps' | 'efforts'>('overview')
+  const [mapResolution, setMapResolution] = useState<'downsampled' | 'full'>('downsampled')
+  const [showAdvancedFit, setShowAdvancedFit] = useState(false)
 
   const api = useApi()
 
@@ -24,10 +27,45 @@ export default function ActivityDetailPage() {
     enabled: !!id,
   })
 
-  const { data: streams } = useQuery({
-    queryKey: ['streams', id],
-    queryFn: () => api.get(`/activities/${id}/streams`).then(r => r.data),
-    enabled: !!id,
+  const { data: mapData, isLoading: mapLoading, isError: mapError } = useQuery({
+    queryKey: ['activity-map', id, mapResolution],
+    queryFn: () => api.get(`/activities/${id}/streams`, {
+      params: {
+        streams: 'gps',
+        gps_mode: mapResolution,
+      },
+    }).then(r => r.data as { gps: any[]; gps_meta?: { downsampled: boolean; total_points: number; returned_points: number } }),
+    enabled: !!id && tab === 'map' && !!act?.has_gps,
+  })
+
+  const { data: chartStreams, isLoading: chartStreamsLoading } = useQuery({
+    queryKey: ['activity-chart-streams', id],
+    queryFn: () => api.get(`/activities/${id}/streams`, {
+      params: { streams: 'hr,pace,power,elevation,sport' },
+    }).then(r => r.data),
+    enabled: !!id && tab === 'streams',
+  })
+
+  const { data: lapsData, isLoading: lapsLoading, isError: lapsError } = useQuery({
+    queryKey: ['activity-laps', id],
+    queryFn: () => api.get(`/activities/${id}/laps`).then(r => r.data as any[]),
+    enabled: !!id && tab === 'laps',
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await api.delete(`/activities/${id}`)
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['activities'] }),
+        qc.invalidateQueries({ queryKey: ['activity', id] }),
+        qc.invalidateQueries({ queryKey: ['activity-map', id] }),
+        qc.invalidateQueries({ queryKey: ['activity-chart-streams', id] }),
+        qc.invalidateQueries({ queryKey: ['activity-laps', id] }),
+      ])
+      navigate('/activities')
+    },
   })
 
   if (isLoading) return (
@@ -47,12 +85,28 @@ export default function ActivityDetailPage() {
   )
 
   const typeColor = activityColor(act.activity_type)
+  const pickleballDetails = act.sport_details?.pickleball
   const zones = {
     z1: act.hr_zone_1_seconds || 0,
     z2: act.hr_zone_2_seconds || 0,
     z3: act.hr_zone_3_seconds || 0,
     z4: act.hr_zone_4_seconds || 0,
     z5: act.hr_zone_5_seconds || 0,
+  }
+  const maxHr = settings.maxHr || 190
+  const lthr = settings.lthr || maxHr * 0.85
+  const zoneRanges = [
+    { label: 'Z1', seconds: zones.z1, color: '#64748b', range: [0, lthr * 0.81] },
+    { label: 'Z2', seconds: zones.z2, color: '#22c55e', range: [lthr * 0.81, lthr * 0.89] },
+    { label: 'Z3', seconds: zones.z3, color: '#eab308', range: [lthr * 0.89, lthr * 0.93] },
+    { label: 'Z4', seconds: zones.z4, color: '#f97316', range: [lthr * 0.93, lthr * 1.0] },
+    { label: 'Z5', seconds: zones.z5, color: '#ef4444', range: [lthr * 1.0, lthr * 1.06] },
+  ]
+
+  function handleDelete() {
+    if (!id || deleteMutation.isPending) return
+    if (!window.confirm(`Delete "${act.name}"? This cannot be undone.`)) return
+    deleteMutation.mutate()
   }
 
   return (
@@ -74,6 +128,27 @@ export default function ActivityDetailPage() {
             {formatDate(act.start_time, 'datetime')} · {act.source?.toUpperCase()}
           </div>
         </div>
+        <button
+          onClick={handleDelete}
+          disabled={deleteMutation.isPending}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '8px 12px',
+            borderRadius: 8,
+            border: '1px solid #ef444480',
+            background: 'transparent',
+            color: '#ef4444',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: deleteMutation.isPending ? 'not-allowed' : 'pointer',
+            opacity: deleteMutation.isPending ? 0.7 : 1,
+          }}
+        >
+          {deleteMutation.isPending ? <Spinner size={14} /> : <Trash2 size={14} />}
+          {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+        </button>
       </div>
 
       {/* Tab selector */}
@@ -81,7 +156,7 @@ export default function ActivityDetailPage() {
         {[
           { id: 'overview', label: 'Overview', icon: <BarChart2 size={13} /> },
           { id: 'map', label: 'Map', icon: <Map size={13} /> },
-          { id: 'streams', label: 'Charts', icon: <Zap size={13} /> },
+          { id: 'streams', label: 'Data', icon: <Zap size={13} /> },
           { id: 'laps', label: 'Laps', icon: <List size={13} /> },
           { id: 'efforts', label: 'Best Efforts', icon: <Trophy size={13} /> },
         ].map(t => (
@@ -135,6 +210,25 @@ export default function ActivityDetailPage() {
             <StatTile label="Training Effect" value={act.aerobic_training_effect?.toFixed(1) ?? '—'} sub={`Anaerobic: ${act.anaerobic_training_effect?.toFixed(1) ?? '—'}`} color="var(--accent)" />
           </div>
 
+          {pickleballDetails && (
+            <Card>
+              <SectionHeader title="Pickleball Summary" subtitle="Stroke metrics imported from Garmin FIT data" />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+                <StatTile label="Total Strokes" value={pickleballDetails.total_strokes ?? '—'} color="#ec4899" />
+                <StatTile label="Forehands" value={pickleballDetails.stroke_stats?.forehand?.count ?? '—'} />
+                <StatTile label="Backhands" value={pickleballDetails.stroke_stats?.backhand?.count ?? '—'} />
+                <StatTile
+                  label="Other Strokes"
+                  value={
+                    (pickleballDetails.stroke_stats?.forehand_slice?.count || 0) +
+                    (pickleballDetails.stroke_stats?.backhand_slice?.count || 0) +
+                    (pickleballDetails.stroke_stats?.serve?.count || 0) || '—'
+                  }
+                />
+              </div>
+            </Card>
+          )}
+
           {/* Running dynamics */}
           {(act.avg_stride_length_m || act.avg_ground_contact_ms || act.avg_vertical_oscillation_cm) && (
             <Card>
@@ -166,6 +260,18 @@ export default function ActivityDetailPage() {
           <Card>
             <SectionHeader title="Heart Rate Zones" />
             <HRZoneBar zones={zones} />
+            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+              {zoneRanges.map((zone) => (
+                <StatTile
+                  key={zone.label}
+                  size="sm"
+                  label={zone.label}
+                  value={formatDuration(zone.seconds as number)}
+                  sub={`${Math.round(zone.range[0])}-${Math.round(zone.range[1])} bpm`}
+                  color={zone.color}
+                />
+              ))}
+            </div>
           </Card>
 
           {/* Power curve (if available) */}
@@ -181,15 +287,41 @@ export default function ActivityDetailPage() {
       {/* Map tab */}
       {tab === 'map' && (
         <Card padding={12}>
-          {streams?.gps?.length ? (
+          {mapData?.gps?.length ? (
             <>
-              <ActivityMap track={streams.gps} height={520} tileUrl={settings.mapTileUrl} />
+              <ActivityMap track={mapData.gps} height={520} tileUrl={settings.mapTileUrl} />
+              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  {mapData.gps_meta?.downsampled
+                    ? `Map downsampled for speed: showing ${mapData.gps_meta.returned_points.toLocaleString()} of ${mapData.gps_meta.total_points.toLocaleString()} GPS points.`
+                    : `Showing full map resolution: ${mapData.gps_meta?.returned_points?.toLocaleString() || mapData.gps.length.toLocaleString()} GPS points.`}
+                </div>
+                <button
+                  onClick={() => setMapResolution(r => r === 'downsampled' ? 'full' : 'downsampled')}
+                  style={{
+                    padding: '7px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--border)',
+                    background: 'transparent',
+                    color: 'var(--text-secondary)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {mapResolution === 'downsampled' ? 'Render Full Track' : 'Use Faster Map'}
+                </button>
+              </div>
               <div style={{ marginTop: 12, display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)' }}>
                 <span>● Start</span>
                 <span style={{ color: '#ef4444' }}>● End</span>
-                <span>{streams.gps.length.toLocaleString()} GPS points</span>
+                <span>{mapData.gps.length.toLocaleString()} rendered points</span>
               </div>
             </>
+          ) : mapLoading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner size={24} /></div>
+          ) : mapError ? (
+            <EmptyState icon="🗺️" message="Map data failed to load" />
           ) : act.has_gps ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner size={24} /></div>
           ) : (
@@ -201,31 +333,132 @@ export default function ActivityDetailPage() {
       {/* Streams tab */}
       {tab === 'streams' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {streams?.hr?.length ? (
+          {chartStreamsLoading ? (
+            <Card><div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner size={24} /></div></Card>
+          ) : null}
+          {pickleballDetails ? (
+            <Card>
+              <SectionHeader title="Pickleball Metrics" subtitle="Stroke counts, winners, errors, and FIT power samples" />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                {[
+                  ['Forehand', 'forehand'],
+                  ['Backhand', 'backhand'],
+                  ['Forehand Slice', 'forehand_slice'],
+                  ['Backhand Slice', 'backhand_slice'],
+                  ['Serve', 'serve'],
+                ].map(([label, key]) => {
+                  const stats = pickleballDetails.stroke_stats?.[key]
+                  const power = pickleballDetails.power_summary?.[key]
+                  return (
+                    <div key={key} style={{ padding: '14px 16px', background: 'var(--bg-elevated)', borderRadius: 10, border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>{label}</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <StatTile size="sm" label="Count" value={stats?.count ?? '—'} />
+                        <StatTile size="sm" label="Winners" value={stats?.winners ?? '—'} color="#22c55e" />
+                        <StatTile size="sm" label="Errors" value={stats?.errors ?? '—'} color="#ef4444" />
+                        <StatTile size="sm" label="Avg Power" value={power?.avg_power ? `${Math.round(power.avg_power)} W` : '—'} color="#f97316" />
+                      </div>
+                      {power?.max_power ? (
+                        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+                          Max power: {Math.round(power.max_power)} W · Samples: {power.samples}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            </Card>
+          ) : null}
+          {pickleballDetails?.advanced_fit ? (
+            <Card>
+              <SectionHeader
+                title="Advanced FIT Data"
+                subtitle="Raw Garmin vendor fields from the FIT file. These are not decoded yet."
+                action={
+                  <button
+                    onClick={() => setShowAdvancedFit(v => !v)}
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: 8,
+                      border: '1px solid var(--border)',
+                      background: 'transparent',
+                      color: 'var(--text-secondary)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {showAdvancedFit ? 'Hide Raw Fields' : 'Show Raw Fields'}
+                  </button>
+                }
+              />
+              {showAdvancedFit ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Unknown Field Summary</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {Object.entries(pickleballDetails.advanced_fit.unknown_field_summary || {}).map(([msgName, fields]: any) => (
+                        <div key={msgName} style={{ padding: '12px 14px', background: 'var(--bg-elevated)', borderRadius: 10, border: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>{msgName}</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {Object.entries(fields).map(([fieldName, values]: any) => (
+                              <div key={fieldName} style={{ fontSize: 12, color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', wordBreak: 'break-word' }}>
+                                <span style={{ color: 'var(--text-primary)' }}>{fieldName}</span>: {values.join(', ')}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Unknown Record Samples</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {(pickleballDetails.advanced_fit.unknown_record_samples || []).map((sample: any, index: number) => (
+                        <div key={index} style={{ padding: '12px 14px', background: 'var(--bg-elevated)', borderRadius: 10, border: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                            {sample.timestamp || '—'} · HR {sample.heart_rate ?? '—'} · Speed {sample.enhanced_speed ?? '—'} · Distance {sample.distance ?? '—'}
+                          </div>
+                          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                            {JSON.stringify(sample.unknowns, null, 2)}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Hidden by default because these are raw vendor-specific FIT fields and may not map cleanly to named pickleball metrics.
+                </div>
+              )}
+            </Card>
+          ) : null}
+          {chartStreams?.hr?.length ? (
             <Card>
               <SectionHeader title="Heart Rate" subtitle={`Avg: ${act.avg_hr?.toFixed(0)} bpm · Max: ${act.max_hr?.toFixed(0)} bpm`} />
-              <HRStreamChart data={streams.hr} />
+              <HRStreamChart data={chartStreams.hr} />
             </Card>
           ) : null}
-          {streams?.pace?.length ? (
+          {chartStreams?.pace?.length ? (
             <Card>
               <SectionHeader title="Pace" />
-              <PaceStreamChart data={streams.pace} />
+              <PaceStreamChart data={chartStreams.pace} />
             </Card>
           ) : null}
-          {streams?.power?.length ? (
+          {chartStreams?.power?.length ? (
             <Card>
               <SectionHeader title="Power" subtitle={`NP: ${formatWatts(act.normalized_power_watts)} · FTP: ${settings.ftpWatts} W`} />
-              <PowerStreamChart data={streams.power} ftp={settings.ftpWatts} />
+              <PowerStreamChart data={chartStreams.power} ftp={settings.ftpWatts} />
             </Card>
           ) : null}
-          {streams?.elevation?.length ? (
+          {chartStreams?.elevation?.length ? (
             <Card>
               <SectionHeader title="Elevation" subtitle={`Gain: ${elevation(act.elevation_gain_m)}`} />
-              <ElevationStreamChart data={streams.elevation} />
+              <ElevationStreamChart data={chartStreams.elevation} />
             </Card>
           ) : null}
-          {!streams?.hr?.length && !streams?.pace?.length && !streams?.power?.length && (
+          {!chartStreamsLoading && !chartStreams?.hr?.length && !chartStreams?.pace?.length && !chartStreams?.power?.length && (
             <EmptyState icon="📈" message="No stream data available for this activity" />
           )}
         </div>
@@ -234,7 +467,17 @@ export default function ActivityDetailPage() {
       {/* Laps tab */}
       {tab === 'laps' && (
         <Card>
-          {act.laps?.length ? (
+          {lapsLoading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner size={24} /></div>
+          ) : lapsError ? (
+            <EmptyState icon="🔁" message="Lap data failed to load" />
+          ) : lapsData?.length ? (
+            <>
+            {lapsData.some((lap: any) => lap.generated) ? (
+              <div style={{ marginBottom: 14, fontSize: 12, color: 'var(--text-muted)' }}>
+                Mile splits were generated from GPS track data because the source file did not include explicit lap markers.
+              </div>
+            ) : null}
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
@@ -245,7 +488,7 @@ export default function ActivityDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {act.laps.map((lap: any, i: number) => {
+                  {lapsData.map((lap: any, i: number) => {
                     const lapPace = lap.distance_m && lap.time_s ? lap.time_s / (lap.distance_m / 1000) : null
                     return (
                       <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
@@ -264,6 +507,7 @@ export default function ActivityDetailPage() {
                 </tbody>
               </table>
             </div>
+            </>
           ) : <EmptyState icon="🔁" message="No lap data" />}
         </Card>
       )}

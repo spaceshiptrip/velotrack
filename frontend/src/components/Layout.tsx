@@ -1,13 +1,11 @@
-import { Outlet, NavLink, useLocation } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Activity, Heart, TrendingUp, Map,
-  Radio, Upload, Settings, Zap, ChevronRight, RefreshCw,
+  Radio, Upload, Settings, Zap, RefreshCw,
   Wifi, WifiOff,
 } from 'lucide-react'
 import { useAppStore } from '../store'
 import { useQuery } from '@tanstack/react-query'
-import { useApi } from '../hooks/useApi'
-import { useState } from 'react'
 
 const NAV = [
   { to: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard' },
@@ -22,8 +20,7 @@ const NAV = [
 
 export default function Layout() {
   const { settings, isServerAvailable, setServerAvailable } = useAppStore()
-  const api = useApi()
-  const [syncing, setSyncing] = useState(false)
+  const navigate = useNavigate()
 
   // Ping server health
   useQuery({
@@ -41,18 +38,6 @@ export default function Layout() {
     refetchInterval: 30_000,
     staleTime: 0,
   })
-
-  async function triggerSync() {
-    if (!isServerAvailable) return
-    setSyncing(true)
-    try {
-      await api.post('/sync/trigger', {
-        start_date: new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
-        end_date: new Date().toISOString().split('T')[0],
-      })
-    } catch {}
-    setTimeout(() => setSyncing(false), 2000)
-  }
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-base)' }}>
@@ -113,14 +98,14 @@ export default function Layout() {
           </div>
           {/* Sync button */}
           {isServerAvailable && (
-            <button onClick={triggerSync} disabled={syncing} style={{
+            <button onClick={() => navigate('/upload')} style={{
               width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
               gap: 6, padding: '7px 0', borderRadius: 6, border: '1px solid var(--border)',
               background: 'transparent', color: 'var(--text-secondary)', fontSize: 12,
-              cursor: syncing ? 'not-allowed' : 'pointer', transition: 'all 0.15s',
+              cursor: 'pointer', transition: 'all 0.15s',
             }}>
-              <RefreshCw size={12} style={{ animation: syncing ? 'spin 1s linear infinite' : 'none' }} />
-              {syncing ? 'Syncing…' : 'Sync Garmin'}
+              <RefreshCw size={12} />
+              Sync Garmin
             </button>
           )}
         </div>

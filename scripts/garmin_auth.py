@@ -2,12 +2,12 @@
 """
 VeloTrack — Garmin Auth Helper
 Run this ONCE to authenticate with Garmin Connect and save tokens.
-The Docker container will reuse the saved tokens automatically.
+The Docker containers reuse the saved tokens via the ./garmin_tokens bind mount.
 
 Usage:
     python scripts/garmin_auth.py
 
-Tokens are saved to: ./garmin_tokens/  (mounted into the container)
+Tokens are saved to: ./garmin_tokens/  (bind-mounted into the containers)
 """
 import getpass
 import os

@@ -123,6 +123,14 @@ async def _save_activity(db, user, data, source):
         trimp=data.get("trimp"),
         intensity_factor=data.get("intensity_factor"),
         efficiency_factor=data.get("efficiency_factor"),
+        aerobic_decoupling=data.get("aerobic_decoupling"),
+        hrss=data.get("hrss"),
+        training_load=data.get("training_load"),
+        hr_zone_1_seconds=data.get("hr_zone_1_seconds"),
+        hr_zone_2_seconds=data.get("hr_zone_2_seconds"),
+        hr_zone_3_seconds=data.get("hr_zone_3_seconds"),
+        hr_zone_4_seconds=data.get("hr_zone_4_seconds"),
+        hr_zone_5_seconds=data.get("hr_zone_5_seconds"),
         has_gps=bool(data.get("has_gps") or data.get("gps_track")),
         start_lat=data.get("start_lat"),
         start_lon=data.get("start_lon"),
@@ -134,6 +142,8 @@ async def _save_activity(db, user, data, source):
         laps=data.get("laps"),
         best_efforts=data.get("best_efforts"),
         power_curve=data.get("power_curve"),
+        sport_details=data.get("sport_details"),
+        sport_streams=data.get("sport_streams"),
         source=source,
     )
     db.add(activity)

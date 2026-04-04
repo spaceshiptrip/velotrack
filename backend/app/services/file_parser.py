@@ -144,11 +144,12 @@ def parse_gpx(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     if power_values:
         np_watts = normalized_power(power_values)
 
-    # Laps from GPX
+    activity_type = _guess_activity_type(gpx, total_distance, duration)
     laps = _extract_gpx_laps(gpx)
+    if not laps and _supports_default_mile_laps(activity_type):
+        laps = _generate_default_laps(track_points)
 
     # Best efforts for running
-    activity_type = _guess_activity_type(gpx, total_distance, duration)
     best_eff = []
     if activity_type in ("running", "trail_running", "hiking") and len(track_points) > 10:
         try:
@@ -239,29 +240,178 @@ def _extract_gpx_laps(gpx) -> List[Dict]:
     return []
 
 
-def _guess_activity_type(gpx, distance_m: float, duration_s: Optional[float]) -> str:
-    """Guess activity type from GPX metadata, name, and pace."""
-    name_lower = (gpx.name or "").lower()
-    if "run" in name_lower:
-        return "running"
-    if "bike" in name_lower or "cycl" in name_lower or "ride" in name_lower:
-        return "cycling"
-    if "hike" in name_lower or "hiking" in name_lower:
-        return "hiking"
-    if "swim" in name_lower:
-        return "swimming"
-    if "walk" in name_lower:
-        return "walking"
+def _supports_default_mile_laps(activity_type: Optional[str]) -> bool:
+    return activity_type in {
+        "running",
+        "trail_running",
+        "hiking",
+        "walking",
+        "cycling",
+        "mountain_biking",
+        "gravel_cycling",
+        "indoor_cycling",
+    }
 
-    # Guess from pace
+
+def _generate_default_laps(track_points: List[Dict[str, Any]], lap_distance_m: float = 1609.344) -> List[Dict[str, Any]]:
+    """Generate approximate mile laps from a GPS track when source lap data is missing."""
+    if len(track_points) < 2:
+        return []
+
+    laps: List[Dict[str, Any]] = []
+    lap_num = 1
+    lap_start_idx = 0
+    lap_distance = 0.0
+    lap_elapsed = 0.0
+    lap_gain = 0.0
+
+    def build_lap(end_idx: int) -> Optional[Dict[str, Any]]:
+        nonlocal lap_num, lap_start_idx, lap_distance, lap_elapsed, lap_gain
+        segment = track_points[lap_start_idx:end_idx + 1]
+        if len(segment) < 2 or lap_distance <= 0:
+            return None
+
+        hr_values = [float(pt["hr"]) for pt in segment if pt.get("hr") is not None]
+        cadence_values = [float(pt["cadence"]) for pt in segment if pt.get("cadence") is not None]
+        power_values = [float(pt["power"]) for pt in segment if pt.get("power") is not None]
+        lap = {
+            "lap_num": lap_num,
+            "distance_m": round(lap_distance, 1),
+            "time_s": round(lap_elapsed, 1),
+            "avg_hr": round(sum(hr_values) / len(hr_values), 1) if hr_values else None,
+            "max_hr": max(hr_values) if hr_values else None,
+            "avg_cadence": round(sum(cadence_values) / len(cadence_values), 1) if cadence_values else None,
+            "avg_power": round(sum(power_values) / len(power_values), 1) if power_values else None,
+            "elevation_gain": round(lap_gain, 1) if lap_gain > 0 else None,
+            "generated": True,
+        }
+        lap_num += 1
+        lap_start_idx = end_idx
+        lap_distance = 0.0
+        lap_elapsed = 0.0
+        lap_gain = 0.0
+        return lap
+
+    for i in range(1, len(track_points)):
+        prev = track_points[i - 1]
+        curr = track_points[i]
+        if prev.get("lat") is None or prev.get("lon") is None or curr.get("lat") is None or curr.get("lon") is None:
+            continue
+
+        segment_distance = haversine(prev["lat"], prev["lon"], curr["lat"], curr["lon"])
+        if segment_distance <= 0:
+            continue
+
+        segment_elapsed = 0.0
+        prev_time = prev.get("time")
+        curr_time = curr.get("time")
+        if prev_time and curr_time:
+            try:
+                prev_dt = datetime.fromisoformat(str(prev_time).replace("Z", "+00:00"))
+                curr_dt = datetime.fromisoformat(str(curr_time).replace("Z", "+00:00"))
+                segment_elapsed = max(0.0, (curr_dt - prev_dt).total_seconds())
+            except Exception:
+                segment_elapsed = 0.0
+
+        prev_ele = prev.get("ele")
+        curr_ele = curr.get("ele")
+        if prev_ele is not None and curr_ele is not None and curr_ele > prev_ele:
+            lap_gain += curr_ele - prev_ele
+
+        lap_distance += segment_distance
+        lap_elapsed += segment_elapsed
+
+        if lap_distance >= lap_distance_m:
+            lap = build_lap(i)
+            if lap:
+                laps.append(lap)
+
+    final_lap = build_lap(len(track_points) - 1)
+    if final_lap:
+        laps.append(final_lap)
+
+    return laps
+
+
+def _guess_activity_type(gpx, distance_m: float, duration_s: Optional[float]) -> str:
+    """Guess activity type from GPX <type>, metadata/name, and pace.
+
+    Preserve explicit GPX activity types exactly when present.
+    Only fall back to guessing when no explicit type exists.
+    """
+
+    def _clean_activity(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        s = value.strip().lower().replace("-", "_").replace(" ", "_")
+        return s or None
+
+    # 1) Most authoritative: GPX track <type>
+    try:
+        if getattr(gpx, "tracks", None):
+            for trk in gpx.tracks:
+                trk_type = _clean_activity(getattr(trk, "type", None))
+                if trk_type:
+                    return trk_type
+    except Exception:
+        pass
+
+    # 2) Next best: GPX name / track name
+    # These are still guesses, but preserve detail if explicitly present in the text.
+    possible_names = []
+
+    gpx_name = _clean_activity(getattr(gpx, "name", None))
+    if gpx_name:
+        possible_names.append(gpx_name)
+
+    try:
+        if getattr(gpx, "tracks", None):
+            for trk in gpx.tracks:
+                trk_name = _clean_activity(getattr(trk, "name", None))
+                if trk_name:
+                    possible_names.append(trk_name)
+    except Exception:
+        pass
+
+    for name in possible_names:
+        # More specific checks first so we don't lose detail
+        if "trail" in name and "run" in name:
+            return "trail_running"
+        if "indoor" in name and "row" in name:
+            return "indoor_rowing"
+        if "open" in name and "water" in name and "swim" in name:
+            return "open_water_swimming"
+        if "pool" in name and "swim" in name:
+            return "pool_swimming"
+        if "pickleball" in name:
+            return "pickleball"
+        if "hiit" in name:
+            return "hiit"
+        if "row" in name:
+            return "rowing"
+        if "run" in name:
+            return "running"
+        if "bike" in name or "cycl" in name or "ride" in name or "mtb" in name:
+            return "cycling"
+        if "hike" in name:
+            return "hiking"
+        if "walk" in name:
+            return "walking"
+        if "swim" in name:
+            return "swimming"
+
+    # 3) Final fallback: infer from pace only when there is no explicit metadata
     if distance_m and duration_s and duration_s > 0:
         speed_ms = distance_m / duration_s
-        if speed_ms > 8:      # > 28 km/h
+
+        if speed_ms > 8:
             return "cycling"
-        elif speed_ms > 3:    # > 10.8 km/h
+        elif speed_ms > 3:
             return "running"
         elif speed_ms > 1.5:
             return "hiking"
+        elif speed_ms > 0.5:
+            return "walking"
 
     return "other"
 
@@ -286,24 +436,31 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     ele_stream = []
     laps = []
     session_data = {}
+    sport_streams: Dict[str, Any] = {}
+    unknown_field_summary: Dict[str, Dict[str, List[str]]] = {}
+    unknown_record_samples: List[Dict[str, Any]] = []
 
     # Parse messages
     for msg in fitfile.get_messages():
         if msg.name == "session":
             for field in msg:
                 session_data[field.name] = field.value
+            _collect_unknown_fields(unknown_field_summary, "session", session_data)
 
         elif msg.name == "lap":
             lap = {}
             for field in msg:
                 lap[field.name] = field.value
             laps.append(lap)
+            _collect_unknown_fields(unknown_field_summary, "lap", lap)
 
         elif msg.name == "record":
             rec = {}
             for field in msg:
                 rec[field.name] = field.value
             track_points.append(rec)
+            _collect_unknown_fields(unknown_field_summary, "record", rec)
+            _collect_unknown_record_sample(unknown_record_samples, rec)
 
     if not track_points:
         return {"name": "FIT Import", "track_points": []}
@@ -349,6 +506,7 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
             pace = 1000 / speed if speed > 0 else 0  # s/km from m/s
             if 60 < pace < 3600:
                 pace_stream.append({"t": t_offset, "pace": pace})
+        _append_pickleball_power_streams(sport_streams, rec, t_offset)
 
     # Compute elevation gain
     elevation_gain = 0.0
@@ -374,6 +532,7 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     sport = session_data.get("sport", "generic")
     sub_sport = session_data.get("sub_sport", "generic")
     activity_type = _fit_sport_to_type(sport, sub_sport)
+    sport_details = _extract_fit_sport_details(session_data, activity_type, sport_streams, unknown_field_summary, unknown_record_samples)
 
     # HR data
     avg_hr = session_data.get("avg_heart_rate") or (
@@ -411,6 +570,8 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
             "avg_power": lap.get("avg_power"),
             "elevation_gain": lap.get("total_ascent"),
         })
+    if not formatted_laps and _supports_default_mile_laps(activity_type):
+        formatted_laps = _generate_default_laps(gps_track)
 
     activity = {
         "name": session_data.get("event") or f"{activity_type.replace('_', ' ').title()} Activity",
@@ -443,6 +604,8 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
         "laps": formatted_laps,
         "best_efforts": best_eff,
         "power_curve": power_curve_data,
+        "sport_details": sport_details,
+        "sport_streams": sport_streams or None,
         # Running dynamics (Garmin-specific FIT fields)
         "avg_stride_length_m": session_data.get("avg_stride_length"),
         "avg_vertical_oscillation_cm": session_data.get("avg_vertical_oscillation"),
@@ -468,6 +631,13 @@ def _fit_semicircles(val) -> Optional[float]:
 
 
 def _fit_sport_to_type(sport: str, sub_sport: str) -> str:
+    numeric_mapping = {
+        (64, 84): "pickleball",
+    }
+    if isinstance(sport, int) or isinstance(sub_sport, int):
+        mapped = numeric_mapping.get((sport, sub_sport))
+        if mapped:
+            return mapped
     mapping = {
         "running": "running",
         "cycling": "cycling",
@@ -480,6 +650,7 @@ def _fit_sport_to_type(sport: str, sub_sport: str) -> str:
         "paddling": "kayaking",
         "skiing": "skiing",
         "snowboarding": "snowboarding",
+        "pickleball": "pickleball",
     }
     sub_mapping = {
         "trail": "trail_running",
@@ -493,7 +664,126 @@ def _fit_sport_to_type(sport: str, sub_sport: str) -> str:
         "pilates": "pilates",
         "stair_climbing": "stair_climbing",
     }
-    sub_key = sub_sport.lower().replace(" ", "_") if sub_sport else ""
+    sub_key = sub_sport.lower().replace(" ", "_") if isinstance(sub_sport, str) and sub_sport else ""
     if sub_key in sub_mapping:
         return sub_mapping[sub_key]
-    return mapping.get(sport.lower().replace(" ", "_") if sport else "", "other")
+    sport_key = sport.lower().replace(" ", "_") if isinstance(sport, str) and sport else ""
+    return mapping.get(sport_key, "other")
+
+
+def _append_pickleball_power_streams(sport_streams: Dict[str, Any], rec: Dict[str, Any], t_offset: float) -> None:
+    stroke_power_fields = {
+        "Forehand power": "forehand",
+        "Backhand power": "backhand",
+        "Forehand Slice power": "forehand_slice",
+        "Backhand Slice power": "backhand_slice",
+        "Serve power": "serve",
+    }
+    pickleball_streams = sport_streams.setdefault("pickleball_power", {})
+    for field_name, key in stroke_power_fields.items():
+        value = rec.get(field_name)
+        if value in (None, 0):
+            continue
+        pickleball_streams.setdefault(key, []).append({"t": t_offset, "power": float(value)})
+
+
+def _extract_fit_sport_details(
+    session_data: Dict[str, Any],
+    activity_type: str,
+    sport_streams: Dict[str, Any],
+    unknown_field_summary: Dict[str, Dict[str, List[str]]],
+    unknown_record_samples: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if activity_type != "pickleball":
+        return None
+
+    stroke_stats = {}
+    for field_name, key in {
+        "Forehand stats": "forehand",
+        "Backhand stats": "backhand",
+        "Forehand Slice stats": "forehand_slice",
+        "Backhand Slice stats": "backhand_slice",
+        "Serve stats": "serve",
+    }.items():
+        parsed = _parse_pickleball_stat_block(session_data.get(field_name))
+        if parsed:
+            stroke_stats[key] = parsed
+
+    power_summary = {}
+    for key, values in (sport_streams.get("pickleball_power") or {}).items():
+        if not values:
+            continue
+        watts = [v["power"] for v in values]
+        power_summary[key] = {
+            "samples": len(watts),
+            "avg_power": round(sum(watts) / len(watts), 1),
+            "max_power": max(watts),
+        }
+
+    return {
+        "pickleball": {
+            "total_strokes": _safe_int(session_data.get("Total stroke count")),
+            "stroke_stats": stroke_stats,
+            "power_summary": power_summary,
+            "advanced_fit": {
+                "unknown_field_summary": unknown_field_summary,
+                "unknown_record_samples": unknown_record_samples,
+            },
+        }
+    }
+
+
+def _parse_pickleball_stat_block(value: Any) -> Optional[Dict[str, Any]]:
+    if not value or value == "- / - / -":
+        return None
+    parts = [part.strip() for part in str(value).split("/")]
+    if len(parts) != 3:
+        return None
+    parsed = [_safe_int(part) for part in parts]
+    if all(v is None for v in parsed):
+        return None
+    return {"count": parsed[0], "winners": parsed[1], "errors": parsed[2]}
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text == "-":
+            return None
+        return int(text)
+    except Exception:
+        return None
+
+
+def _collect_unknown_fields(summary: Dict[str, Dict[str, List[str]]], msg_name: str, fields: Dict[str, Any]) -> None:
+    msg_bucket = summary.setdefault(msg_name, {})
+    for key, value in fields.items():
+        if not str(key).startswith("unknown_"):
+            continue
+        values = msg_bucket.setdefault(key, [])
+        rendered = repr(value)
+        if rendered not in values:
+            values.append(rendered)
+        if len(values) > 8:
+            del values[8:]
+
+
+def _collect_unknown_record_sample(samples: List[Dict[str, Any]], rec: Dict[str, Any]) -> None:
+    if len(samples) >= 12:
+        return
+    unknowns = {
+        key: value for key, value in rec.items()
+        if str(key).startswith("unknown_")
+        and value not in (None, 0, 0.0, (0, 0), (None, None), (None, None, None), (None, None, None, None))
+    }
+    if not unknowns:
+        return
+    samples.append({
+        "timestamp": rec.get("timestamp").isoformat() if rec.get("timestamp") else None,
+        "distance": rec.get("distance"),
+        "enhanced_speed": rec.get("enhanced_speed"),
+        "heart_rate": rec.get("heart_rate"),
+        "unknowns": unknowns,
+    })

@@ -158,6 +158,8 @@ class Activity(Base):
     laps: Mapped[Optional[dict]] = mapped_column(JSON)           # [{lap_num, dist, time, pace, hr, ...}]
     best_efforts: Mapped[Optional[dict]] = mapped_column(JSON)   # [{dist, time, pace}]
     power_curve: Mapped[Optional[dict]] = mapped_column(JSON)    # [{duration_s, watts}]
+    sport_details: Mapped[Optional[dict]] = mapped_column(JSON)  # sport-specific summary metrics
+    sport_streams: Mapped[Optional[dict]] = mapped_column(JSON)  # sport-specific time series
 
     # Source tracking
     source: Mapped[str] = mapped_column(String(20), default="garmin")  # garmin|gpx|fit|manual
