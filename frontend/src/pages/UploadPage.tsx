@@ -22,6 +22,12 @@ export default function UploadPage() {
   const [syncMode, setSyncMode] = useState<'range' | 'backfill'>('range')
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
+  const [authMessage, setAuthMessage] = useState<string | null>(null)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [mfaSessionId, setMfaSessionId] = useState<string | null>(null)
+  const [mfaCode, setMfaCode] = useState('')
+  const [garminEmail, setGarminEmail] = useState('')
+  const [garminPassword, setGarminPassword] = useState('')
   const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0])
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0])
   const [backfillDays, setBackfillDays] = useState('365')
@@ -61,11 +67,53 @@ export default function UploadPage() {
   const hasToken = !!getToken()
   const shouldPollSync = isServerAvailable && hasToken
 
+  const { data: authStatus, refetch: refetchAuthStatus } = useQuery({
+    queryKey: ['garmin-auth-status'],
+    queryFn: () => api.get('/sync/auth-status').then(r => r.data as { authenticated: boolean; message?: string | null }),
+    enabled: shouldPollSync,
+    refetchInterval: mfaSessionId ? false : 300000,
+  })
+
   const { data: syncStatus } = useQuery({
     queryKey: ['sync-status'],
     queryFn: () => api.get('/sync/status').then(r => r.data as { status: string; last_sync?: string | null; message?: string | null }),
     enabled: shouldPollSync,
     refetchInterval: (query) => query.state.data?.status === 'running' ? 3000 : 15000,
+  })
+
+  const startAuthMutation = useMutation({
+    mutationFn: async () => api.post('/sync/auth/start', {
+      email: garminEmail.trim() || undefined,
+      password: garminPassword || undefined,
+    }),
+    onSuccess: async (response) => {
+      setAuthError(null)
+      setAuthMessage(response.data?.message || 'Garmin authentication started')
+      if (response.data?.status === 'needs_mfa') {
+        setMfaSessionId(response.data.session_id || null)
+      } else {
+        setMfaSessionId(null)
+        setMfaCode('')
+      }
+      await refetchAuthStatus()
+    },
+    onError: (e: any) => {
+      setAuthError(e.response?.data?.detail || e.message || 'Garmin authentication failed')
+    },
+  })
+
+  const verifyAuthMutation = useMutation({
+    mutationFn: async () => api.post('/sync/auth/verify', { session_id: mfaSessionId, mfa_code: mfaCode }),
+    onSuccess: async (response) => {
+      setAuthError(null)
+      setAuthMessage(response.data?.message || 'Garmin authentication complete')
+      setMfaSessionId(null)
+      setMfaCode('')
+      await refetchAuthStatus()
+    },
+    onError: (e: any) => {
+      setAuthError(e.response?.data?.detail || e.message || 'Garmin MFA verification failed')
+    },
   })
 
   const rangeSyncMutation = useMutation({
@@ -118,6 +166,12 @@ export default function UploadPage() {
       lastSyncStateRef.current = syncStatus.status
     }
   }, [qc, syncStatus])
+
+  useEffect(() => {
+    if (!authStatus || mfaSessionId) return
+    setAuthError(null)
+    setAuthMessage(authStatus.message || (authStatus.authenticated ? 'Saved Garmin tokens are valid.' : 'Garmin is not authenticated.'))
+  }, [authStatus, mfaSessionId])
 
   async function analyzeLocal(file: File) {
     setLocalAnalyzing(true)
@@ -313,6 +367,78 @@ export default function UploadPage() {
                   {syncStatus?.last_sync && (
                     <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
                       Last completed: {formatDate(syncStatus.last_sync, 'datetime')}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${authError ? '#ef444440' : authStatus?.authenticated ? 'var(--accent-dim)' : 'var(--border)'}`,
+                  background: authError ? '#ef444415' : 'var(--bg-elevated)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    {authError
+                      ? <AlertCircle size={14} color="#ef4444" />
+                      : <RefreshCw size={14} color={authStatus?.authenticated ? 'var(--accent)' : 'var(--text-muted)'} style={{ animation: startAuthMutation.isPending || verifyAuthMutation.isPending ? 'spin 1s linear infinite' : 'none' }} />}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: authError ? '#ef4444' : 'var(--text-primary)' }}>
+                      {mfaSessionId ? 'Garmin MFA Required' : authStatus?.authenticated ? 'Garmin Authenticated' : 'Garmin Authentication Needed'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: authError ? '#fca5a5' : 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {authError || authMessage || 'Authenticate Garmin to save reusable tokens for sync.'}
+                  </div>
+                  {!mfaSessionId ? (
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <input
+                        value={garminEmail}
+                        onChange={e => setGarminEmail(e.target.value)}
+                        placeholder="Garmin email (optional if set in .env)"
+                        autoComplete="username"
+                        style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 13 }}
+                      />
+                      <input
+                        type="password"
+                        value={garminPassword}
+                        onChange={e => setGarminPassword(e.target.value)}
+                        placeholder="Garmin password (optional if set in .env)"
+                        autoComplete="current-password"
+                        style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 13 }}
+                      />
+                      <button
+                        onClick={() => startAuthMutation.mutate()}
+                        disabled={startAuthMutation.isPending || verifyAuthMutation.isPending}
+                        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: startAuthMutation.isPending || verifyAuthMutation.isPending ? 'not-allowed' : 'pointer', opacity: startAuthMutation.isPending || verifyAuthMutation.isPending ? 0.7 : 1 }}
+                      >
+                        <RefreshCw size={14} style={{ animation: startAuthMutation.isPending ? 'spin 1s linear infinite' : 'none' }} />
+                        {authStatus?.authenticated ? 'Re-authenticate Garmin' : 'Authenticate Garmin'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <input
+                        value={mfaCode}
+                        onChange={e => setMfaCode(e.target.value)}
+                        placeholder="Enter MFA code from Garmin email"
+                        style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 13 }}
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          onClick={() => verifyAuthMutation.mutate()}
+                          disabled={verifyAuthMutation.isPending || !mfaCode.trim()}
+                          style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: verifyAuthMutation.isPending || !mfaCode.trim() ? 'not-allowed' : 'pointer', opacity: verifyAuthMutation.isPending || !mfaCode.trim() ? 0.7 : 1 }}
+                        >
+                          <RefreshCw size={14} style={{ animation: verifyAuthMutation.isPending ? 'spin 1s linear infinite' : 'none' }} />
+                          {verifyAuthMutation.isPending ? 'Verifying…' : 'Verify Code'}
+                        </button>
+                        <button
+                          onClick={() => { setMfaSessionId(null); setMfaCode(''); setAuthError(null) }}
+                          disabled={verifyAuthMutation.isPending}
+                          style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', fontSize: 13, cursor: verifyAuthMutation.isPending ? 'not-allowed' : 'pointer' }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

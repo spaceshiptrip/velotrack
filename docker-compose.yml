@@ -39,7 +39,7 @@ services:
       - "8000:8000"
     volumes:
       - fit_files:/app/fit_files
-      - garmin_tokens:/app/garmin_tokens
+      - ./garmin_tokens:/app/garmin_tokens
 
   frontend:
     build:
@@ -90,7 +90,7 @@ services:
       REDIS_URL: redis://redis:6379
     volumes:
       - fit_files:/app/fit_files
-      - garmin_tokens:/app/garmin_tokens
+      - ./garmin_tokens:/app/garmin_tokens
 
   scheduler:
     build:
@@ -104,11 +104,12 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://velotrack:${DB_PASSWORD:-velotrack_secret}@db/velotrack
       REDIS_URL: redis://redis:6379
+    volumes:
+      - ./garmin_tokens:/app/garmin_tokens
 
 volumes:
   db_data:
   redis_data:
   fit_files:
-  garmin_tokens:
   brouter_segments:
   brouter_profiles:

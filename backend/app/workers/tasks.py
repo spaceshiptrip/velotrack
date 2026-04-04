@@ -21,10 +21,6 @@ def _run(coro):
 @celery_app.task(name="app.workers.tasks.sync_recent", bind=True, max_retries=3)
 def sync_recent(self, days: int = 2):
     """Sync the last N days of Garmin data."""
-    if not settings.garmin_email or not settings.garmin_password:
-        log.warning("tasks.sync_recent: no garmin credentials configured")
-        return {"status": "skipped", "reason": "no credentials"}
-
     end = datetime.utcnow().date()
     start = (datetime.utcnow() - timedelta(days=days)).date()
     log.info("tasks.sync_recent.start", start=str(start), end=str(end))
@@ -115,8 +111,11 @@ async def _do_sync(start, end, user_id: int = 1):
 
                     activity = Activity(user_id=user_id, start_time=start_time)
                     for field, val in act_data.items():
-                        if hasattr(activity, field) and val is not None:
-                            setattr(activity, field, val)
+                        if val is None or not hasattr(activity, field):
+                            continue
+                        if field == "start_time":
+                            continue
+                        setattr(activity, field, val)
                     db.add(activity)
                     await db.flush()
 
