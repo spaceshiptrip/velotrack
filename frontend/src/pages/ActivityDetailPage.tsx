@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useApi } from '../hooks/useApi'
-import { ArrowLeft, Map, BarChart2, List, Trophy, Zap } from 'lucide-react'
+import { ArrowLeft, Map, BarChart2, List, Trophy, Zap, Trash2 } from 'lucide-react'
 import { useAppStore, useUnits } from '../store'
 import { Card, PageHeader, SectionHeader, StatTile, Badge, Spinner, HRZoneBar, PillSelect, Divider, EmptyState } from '../components/ui'
 import { HRStreamChart, PaceStreamChart, PowerStreamChart, ElevationStreamChart, PowerCurveChart } from '../components/charts'
@@ -14,6 +14,7 @@ export default function ActivityDetailPage() {
   const { settings } = useAppStore()
   const { distance, elevation, speed, pace } = useUnits()
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const [tab, setTab] = useState<'overview' | 'map' | 'streams' | 'laps' | 'efforts'>('overview')
 
   const api = useApi()
@@ -28,6 +29,20 @@ export default function ActivityDetailPage() {
     queryKey: ['streams', id],
     queryFn: () => api.get(`/activities/${id}/streams`).then(r => r.data),
     enabled: !!id,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await api.delete(`/activities/${id}`)
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['activities'] }),
+        qc.invalidateQueries({ queryKey: ['activity', id] }),
+        qc.invalidateQueries({ queryKey: ['streams', id] }),
+      ])
+      navigate('/activities')
+    },
   })
 
   if (isLoading) return (
@@ -55,6 +70,12 @@ export default function ActivityDetailPage() {
     z5: act.hr_zone_5_seconds || 0,
   }
 
+  function handleDelete() {
+    if (!id || deleteMutation.isPending) return
+    if (!window.confirm(`Delete "${act.name}"? This cannot be undone.`)) return
+    deleteMutation.mutate()
+  }
+
   return (
     <div style={{ padding: '28px' }}>
       {/* Header */}
@@ -74,6 +95,27 @@ export default function ActivityDetailPage() {
             {formatDate(act.start_time, 'datetime')} · {act.source?.toUpperCase()}
           </div>
         </div>
+        <button
+          onClick={handleDelete}
+          disabled={deleteMutation.isPending}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '8px 12px',
+            borderRadius: 8,
+            border: '1px solid #ef444480',
+            background: 'transparent',
+            color: '#ef4444',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: deleteMutation.isPending ? 'not-allowed' : 'pointer',
+            opacity: deleteMutation.isPending ? 0.7 : 1,
+          }}
+        >
+          {deleteMutation.isPending ? <Spinner size={14} /> : <Trash2 size={14} />}
+          {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+        </button>
       </div>
 
       {/* Tab selector */}

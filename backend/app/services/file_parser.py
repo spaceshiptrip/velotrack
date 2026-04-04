@@ -240,28 +240,84 @@ def _extract_gpx_laps(gpx) -> List[Dict]:
 
 
 def _guess_activity_type(gpx, distance_m: float, duration_s: Optional[float]) -> str:
-    """Guess activity type from GPX metadata, name, and pace."""
-    name_lower = (gpx.name or "").lower()
-    if "run" in name_lower:
-        return "running"
-    if "bike" in name_lower or "cycl" in name_lower or "ride" in name_lower:
-        return "cycling"
-    if "hike" in name_lower or "hiking" in name_lower:
-        return "hiking"
-    if "swim" in name_lower:
-        return "swimming"
-    if "walk" in name_lower:
-        return "walking"
+    """Guess activity type from GPX <type>, metadata/name, and pace.
 
-    # Guess from pace
+    Preserve explicit GPX activity types exactly when present.
+    Only fall back to guessing when no explicit type exists.
+    """
+
+    def _clean_activity(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        s = value.strip().lower().replace("-", "_").replace(" ", "_")
+        return s or None
+
+    # 1) Most authoritative: GPX track <type>
+    try:
+        if getattr(gpx, "tracks", None):
+            for trk in gpx.tracks:
+                trk_type = _clean_activity(getattr(trk, "type", None))
+                if trk_type:
+                    return trk_type
+    except Exception:
+        pass
+
+    # 2) Next best: GPX name / track name
+    # These are still guesses, but preserve detail if explicitly present in the text.
+    possible_names = []
+
+    gpx_name = _clean_activity(getattr(gpx, "name", None))
+    if gpx_name:
+        possible_names.append(gpx_name)
+
+    try:
+        if getattr(gpx, "tracks", None):
+            for trk in gpx.tracks:
+                trk_name = _clean_activity(getattr(trk, "name", None))
+                if trk_name:
+                    possible_names.append(trk_name)
+    except Exception:
+        pass
+
+    for name in possible_names:
+        # More specific checks first so we don't lose detail
+        if "trail" in name and "run" in name:
+            return "trail_running"
+        if "indoor" in name and "row" in name:
+            return "indoor_rowing"
+        if "open" in name and "water" in name and "swim" in name:
+            return "open_water_swimming"
+        if "pool" in name and "swim" in name:
+            return "pool_swimming"
+        if "pickleball" in name:
+            return "pickleball"
+        if "hiit" in name:
+            return "hiit"
+        if "row" in name:
+            return "rowing"
+        if "run" in name:
+            return "running"
+        if "bike" in name or "cycl" in name or "ride" in name or "mtb" in name:
+            return "cycling"
+        if "hike" in name:
+            return "hiking"
+        if "walk" in name:
+            return "walking"
+        if "swim" in name:
+            return "swimming"
+
+    # 3) Final fallback: infer from pace only when there is no explicit metadata
     if distance_m and duration_s and duration_s > 0:
         speed_ms = distance_m / duration_s
-        if speed_ms > 8:      # > 28 km/h
+
+        if speed_ms > 8:
             return "cycling"
-        elif speed_ms > 3:    # > 10.8 km/h
+        elif speed_ms > 3:
             return "running"
         elif speed_ms > 1.5:
             return "hiking"
+        elif speed_ms > 0.5:
+            return "walking"
 
     return "other"
 
