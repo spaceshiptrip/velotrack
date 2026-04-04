@@ -9,22 +9,25 @@ interface ActivityMapProps {
   tileUrl?: string
   showMarkers?: boolean
   livePoints?: TrackPoint[]
+  renderMode?: 'path' | 'heatmap'
 }
 
-export function ActivityMap({ track, height = 300, style, tileUrl, showMarkers = true, livePoints }: ActivityMapProps) {
+export function ActivityMap({ track, height = 300, style, tileUrl, showMarkers = true, livePoints, renderMode = 'path' }: ActivityMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
   const polyRef = useRef<any>(null)
   const livePolyRef = useRef<any>(null)
   const markerRef = useRef<any>(null)
+  const heatLayerRef = useRef<any>(null)
 
   useEffect(() => {
     if (!containerRef.current || !track?.length) return
     if (typeof window === 'undefined') return
 
-    // Dynamically import leaflet (avoids SSR issues)
-    import('leaflet').then((L) => {
-      // Avoid double init
+    import('leaflet').then(async (leafletModule) => {
+      const L = (leafletModule as any).default || leafletModule
+      ;(window as any).L = L
+      await import('leaflet.heat')
       if (mapRef.current) {
         mapRef.current.remove()
         mapRef.current = null
@@ -38,13 +41,34 @@ export function ActivityMap({ track, height = 300, style, tileUrl, showMarkers =
         { maxZoom: 19 }
       ).addTo(map)
 
-      // Main track
       const latlngs = track.map(p => [p.lat, p.lon] as [number, number])
-      const poly = L.polyline(latlngs, { color: '#22c55e', weight: 3, opacity: 0.9 }).addTo(map)
-      polyRef.current = poly
-      map.fitBounds(poly.getBounds(), { padding: [20, 20] })
+      const bounds = L.latLngBounds(latlngs)
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [20, 20] })
+      }
 
-      // Start / end markers
+      if (renderMode === 'heatmap') {
+        heatLayerRef.current = (L as any).heatLayer(
+          buildHeatPoints(track),
+          {
+            radius: 24,
+            blur: 18,
+            maxZoom: 19,
+            minOpacity: 0.25,
+            gradient: {
+              0.2: '#2563eb',
+              0.45: '#22c55e',
+              0.7: '#eab308',
+              0.88: '#f97316',
+              1.0: '#d63f2a',
+            },
+          }
+        ).addTo(map)
+      } else {
+        const poly = L.polyline(latlngs, { color: '#22c55e', weight: 3, opacity: 0.9 }).addTo(map)
+        polyRef.current = poly
+      }
+
       if (showMarkers && track.length > 1) {
         const start = track[0]
         const end = track[track.length - 1]
@@ -60,10 +84,10 @@ export function ActivityMap({ track, height = 300, style, tileUrl, showMarkers =
         mapRef.current.remove()
         mapRef.current = null
       }
+      heatLayerRef.current = null
     }
-  }, [track])
+  }, [track, renderMode, tileUrl, showMarkers])
 
-  // Update live points
   useEffect(() => {
     if (!mapRef.current || !livePoints?.length) return
     import('leaflet').then((L) => {
@@ -74,7 +98,6 @@ export function ActivityMap({ track, height = 300, style, tileUrl, showMarkers =
       const livePoly = L.polyline(latlngs, { color: '#f97316', weight: 3, dashArray: '6 4' }).addTo(mapRef.current)
       livePolyRef.current = livePoly
 
-      // Live marker at last point
       const last = livePoints[livePoints.length - 1]
       if (markerRef.current) markerRef.current.remove()
       const icon = L.divIcon({ html: '<div style="width:14px;height:14px;background:#f97316;border:3px solid #fff;border-radius:50%;box-shadow:0 0 8px #f97316;"></div>', iconSize: [14, 14], className: '' })
@@ -96,12 +119,47 @@ export function ActivityMap({ track, height = 300, style, tileUrl, showMarkers =
   )
 }
 
-// ── Route planner map ─────────────────────────────────────────────────────────
+function buildHeatPoints(track: TrackPoint[]) {
+  if (!track.length) return []
+
+  const cells = new Map<string, { latSum: number; lonSum: number; count: number }>()
+
+  for (const point of track) {
+    const key = heatCellKey(point.lat, point.lon)
+    const cell = cells.get(key) || { latSum: 0, lonSum: 0, count: 0 }
+    cell.latSum += point.lat
+    cell.lonSum += point.lon
+    cell.count += 1
+    cells.set(key, cell)
+  }
+
+  const maxCount = Math.max(...Array.from(cells.values()).map(cell => cell.count), 1)
+
+  return Array.from(cells.values())
+    .map((cell) => {
+      const intensity = Math.pow(cell.count / maxCount, 1.35)
+      return [
+        cell.latSum / cell.count,
+        cell.lonSum / cell.count,
+        Math.max(0.08, intensity),
+      ]
+    })
+    .filter((point) => point[2] > 0)
+}
+
+function heatCellKey(lat: number, lon: number) {
+  const metersPerDegreeLat = 111_320
+  const metersPerDegreeLon = Math.max(1, 111_320 * Math.cos((lat * Math.PI) / 180))
+  const cellSizeMeters = 8
+  const latBucket = Math.round((lat * metersPerDegreeLat) / cellSizeMeters)
+  const lonBucket = Math.round((lon * metersPerDegreeLon) / cellSizeMeters)
+  return `${latBucket}:${lonBucket}`
+}
 
 interface RoutePlannerMapProps {
   height?: number
   waypoints: Array<{ lat: number; lon: number }>
-  route?: any // GeoJSON
+  route?: any
   onMapClick?: (lat: number, lon: number) => void
   tileUrl?: string
 }
@@ -121,7 +179,7 @@ export function RoutePlannerMap({ height = 500, waypoints, route, onMapClick, ti
       mapRef.current = map
 
       L.tileLayer(tileUrl || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
-      map.setView([49.2827, -123.1207], 11) // Default: Vancouver
+      map.setView([49.2827, -123.1207], 11)
 
       if (onMapClick) {
         map.on('click', (e: any) => onMapClick(e.latlng.lat, e.latlng.lng))
@@ -132,7 +190,6 @@ export function RoutePlannerMap({ height = 500, waypoints, route, onMapClick, ti
     }
   }, [])
 
-  // Update waypoints
   useEffect(() => {
     if (!mapRef.current) return
     import('leaflet').then((L) => {
@@ -153,7 +210,6 @@ export function RoutePlannerMap({ height = 500, waypoints, route, onMapClick, ti
     })
   }, [waypoints])
 
-  // Update route GeoJSON
   useEffect(() => {
     if (!mapRef.current || !route) return
     import('leaflet').then((L) => {

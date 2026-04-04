@@ -17,6 +17,7 @@ export default function ActivityDetailPage() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<'overview' | 'map' | 'streams' | 'laps' | 'efforts'>('overview')
   const [mapResolution, setMapResolution] = useState<'downsampled' | 'full'>('downsampled')
+  const [mapMode, setMapMode] = useState<'path' | 'heatmap'>('path')
   const [showAdvancedFit, setShowAdvancedFit] = useState(false)
 
   const api = useApi()
@@ -289,32 +290,66 @@ export default function ActivityDetailPage() {
         <Card padding={12}>
           {mapData?.gps?.length ? (
             <>
-              <ActivityMap track={mapData.gps} height={520} tileUrl={settings.mapTileUrl} />
+              <ActivityMap track={mapData.gps} height={520} tileUrl={settings.mapTileUrl} renderMode={mapMode} />
               <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                  {mapData.gps_meta?.downsampled
-                    ? `Map downsampled for speed: showing ${mapData.gps_meta.returned_points.toLocaleString()} of ${mapData.gps_meta.total_points.toLocaleString()} GPS points.`
-                    : `Showing full map resolution: ${mapData.gps_meta?.returned_points?.toLocaleString() || mapData.gps.length.toLocaleString()} GPS points.`}
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5, flex: 1, minWidth: 260 }}>
+                  <div>
+                    {mapData.gps_meta?.downsampled
+                      ? `Map downsampled for speed: showing ${mapData.gps_meta.returned_points.toLocaleString()} of ${mapData.gps_meta.total_points.toLocaleString()} GPS points.`
+                      : `Showing full map resolution: ${mapData.gps_meta?.returned_points?.toLocaleString() || mapData.gps.length.toLocaleString()} GPS points.`}
+                  </div>
+                  {mapMode === 'heatmap' ? (
+                    <div style={{ marginTop: 4 }}>
+                      Heat intensity reflects repeated presence in the same area, not just slow movement along the route.
+                    </div>
+                  ) : null}
                 </div>
-                <button
-                  onClick={() => setMapResolution(r => r === 'downsampled' ? 'full' : 'downsampled')}
-                  style={{
-                    padding: '7px 12px',
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
-                    background: 'transparent',
-                    color: 'var(--text-secondary)',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {mapResolution === 'downsampled' ? 'Render Full Track' : 'Use Faster Map'}
-                </button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {[
+                      { id: 'path', label: 'Path' },
+                      { id: 'heatmap', label: 'Heatmap' },
+                    ].map(option => (
+                      <button
+                        key={option.id}
+                        onClick={() => setMapMode(option.id as 'path' | 'heatmap')}
+                        style={{
+                          padding: '7px 12px',
+                          borderRadius: 8,
+                          border: '1px solid',
+                          borderColor: mapMode === option.id ? typeColor : 'var(--border)',
+                          background: mapMode === option.id ? `${typeColor}15` : 'transparent',
+                          color: mapMode === option.id ? typeColor : 'var(--text-secondary)',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => setMapResolution(r => r === 'downsampled' ? 'full' : 'downsampled')}
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: 8,
+                      border: '1px solid var(--border)',
+                      background: 'transparent',
+                      color: 'var(--text-secondary)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {mapResolution === 'downsampled' ? 'Render Full Track' : 'Use Faster Map'}
+                  </button>
+                </div>
               </div>
               <div style={{ marginTop: 12, display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)' }}>
                 <span>● Start</span>
                 <span style={{ color: '#ef4444' }}>● End</span>
+                {mapMode === 'heatmap' ? <span>Blue = less repeated presence, red = more repeated presence</span> : null}
                 <span>{mapData.gps.length.toLocaleString()} rendered points</span>
               </div>
             </>
