@@ -144,11 +144,12 @@ def parse_gpx(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     if power_values:
         np_watts = normalized_power(power_values)
 
-    # Laps from GPX
+    activity_type = _guess_activity_type(gpx, total_distance, duration)
     laps = _extract_gpx_laps(gpx)
+    if not laps and _supports_default_mile_laps(activity_type):
+        laps = _generate_default_laps(track_points)
 
     # Best efforts for running
-    activity_type = _guess_activity_type(gpx, total_distance, duration)
     best_eff = []
     if activity_type in ("running", "trail_running", "hiking") and len(track_points) > 10:
         try:
@@ -237,6 +238,99 @@ def _extract_gpx_laps(gpx) -> List[Dict]:
     """Extract lap data if present in GPX routes."""
     # GPX doesn't natively have laps but some exporters add them
     return []
+
+
+def _supports_default_mile_laps(activity_type: Optional[str]) -> bool:
+    return activity_type in {
+        "running",
+        "trail_running",
+        "hiking",
+        "walking",
+        "cycling",
+        "mountain_biking",
+        "gravel_cycling",
+        "indoor_cycling",
+    }
+
+
+def _generate_default_laps(track_points: List[Dict[str, Any]], lap_distance_m: float = 1609.344) -> List[Dict[str, Any]]:
+    """Generate approximate mile laps from a GPS track when source lap data is missing."""
+    if len(track_points) < 2:
+        return []
+
+    laps: List[Dict[str, Any]] = []
+    lap_num = 1
+    lap_start_idx = 0
+    lap_distance = 0.0
+    lap_elapsed = 0.0
+    lap_gain = 0.0
+
+    def build_lap(end_idx: int) -> Optional[Dict[str, Any]]:
+        nonlocal lap_num, lap_start_idx, lap_distance, lap_elapsed, lap_gain
+        segment = track_points[lap_start_idx:end_idx + 1]
+        if len(segment) < 2 or lap_distance <= 0:
+            return None
+
+        hr_values = [float(pt["hr"]) for pt in segment if pt.get("hr") is not None]
+        cadence_values = [float(pt["cadence"]) for pt in segment if pt.get("cadence") is not None]
+        power_values = [float(pt["power"]) for pt in segment if pt.get("power") is not None]
+        lap = {
+            "lap_num": lap_num,
+            "distance_m": round(lap_distance, 1),
+            "time_s": round(lap_elapsed, 1),
+            "avg_hr": round(sum(hr_values) / len(hr_values), 1) if hr_values else None,
+            "max_hr": max(hr_values) if hr_values else None,
+            "avg_cadence": round(sum(cadence_values) / len(cadence_values), 1) if cadence_values else None,
+            "avg_power": round(sum(power_values) / len(power_values), 1) if power_values else None,
+            "elevation_gain": round(lap_gain, 1) if lap_gain > 0 else None,
+            "generated": True,
+        }
+        lap_num += 1
+        lap_start_idx = end_idx
+        lap_distance = 0.0
+        lap_elapsed = 0.0
+        lap_gain = 0.0
+        return lap
+
+    for i in range(1, len(track_points)):
+        prev = track_points[i - 1]
+        curr = track_points[i]
+        if prev.get("lat") is None or prev.get("lon") is None or curr.get("lat") is None or curr.get("lon") is None:
+            continue
+
+        segment_distance = haversine(prev["lat"], prev["lon"], curr["lat"], curr["lon"])
+        if segment_distance <= 0:
+            continue
+
+        segment_elapsed = 0.0
+        prev_time = prev.get("time")
+        curr_time = curr.get("time")
+        if prev_time and curr_time:
+            try:
+                prev_dt = datetime.fromisoformat(str(prev_time).replace("Z", "+00:00"))
+                curr_dt = datetime.fromisoformat(str(curr_time).replace("Z", "+00:00"))
+                segment_elapsed = max(0.0, (curr_dt - prev_dt).total_seconds())
+            except Exception:
+                segment_elapsed = 0.0
+
+        prev_ele = prev.get("ele")
+        curr_ele = curr.get("ele")
+        if prev_ele is not None and curr_ele is not None and curr_ele > prev_ele:
+            lap_gain += curr_ele - prev_ele
+
+        lap_distance += segment_distance
+        lap_elapsed += segment_elapsed
+
+        if lap_distance >= lap_distance_m:
+            lap = build_lap(i)
+            if lap:
+                laps.append(lap)
+
+    final_lap = build_lap(len(track_points) - 1)
+    if final_lap:
+        laps.append(final_lap)
+
+    return laps
 
 
 def _guess_activity_type(gpx, distance_m: float, duration_s: Optional[float]) -> str:
@@ -476,6 +570,8 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
             "avg_power": lap.get("avg_power"),
             "elevation_gain": lap.get("total_ascent"),
         })
+    if not formatted_laps and _supports_default_mile_laps(activity_type):
+        formatted_laps = _generate_default_laps(gps_track)
 
     activity = {
         "name": session_data.get("event") or f"{activity_type.replace('_', ' ').title()} Activity",

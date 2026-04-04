@@ -46,6 +46,12 @@ export default function ActivityDetailPage() {
     enabled: !!id && tab === 'streams',
   })
 
+  const { data: lapsData, isLoading: lapsLoading, isError: lapsError } = useQuery({
+    queryKey: ['activity-laps', id],
+    queryFn: () => api.get(`/activities/${id}/laps`).then(r => r.data as any[]),
+    enabled: !!id && tab === 'laps',
+  })
+
   const deleteMutation = useMutation({
     mutationFn: async () => {
       await api.delete(`/activities/${id}`)
@@ -56,6 +62,7 @@ export default function ActivityDetailPage() {
         qc.invalidateQueries({ queryKey: ['activity', id] }),
         qc.invalidateQueries({ queryKey: ['activity-map', id] }),
         qc.invalidateQueries({ queryKey: ['activity-chart-streams', id] }),
+        qc.invalidateQueries({ queryKey: ['activity-laps', id] }),
       ])
       navigate('/activities')
     },
@@ -460,7 +467,17 @@ export default function ActivityDetailPage() {
       {/* Laps tab */}
       {tab === 'laps' && (
         <Card>
-          {act.laps?.length ? (
+          {lapsLoading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}><Spinner size={24} /></div>
+          ) : lapsError ? (
+            <EmptyState icon="🔁" message="Lap data failed to load" />
+          ) : lapsData?.length ? (
+            <>
+            {lapsData.some((lap: any) => lap.generated) ? (
+              <div style={{ marginBottom: 14, fontSize: 12, color: 'var(--text-muted)' }}>
+                Mile splits were generated from GPS track data because the source file did not include explicit lap markers.
+              </div>
+            ) : null}
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
@@ -471,7 +488,7 @@ export default function ActivityDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {act.laps.map((lap: any, i: number) => {
+                  {lapsData.map((lap: any, i: number) => {
                     const lapPace = lap.distance_m && lap.time_s ? lap.time_s / (lap.distance_m / 1000) : null
                     return (
                       <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
@@ -490,6 +507,7 @@ export default function ActivityDetailPage() {
                 </tbody>
               </table>
             </div>
+            </>
           ) : <EmptyState icon="🔁" message="No lap data" />}
         </Card>
       )}

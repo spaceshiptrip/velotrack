@@ -10,6 +10,7 @@ from sqlalchemy import select, func, and_, desc
 from app.core.database import get_db
 from app.models.models import Activity, User
 from app.api.deps import get_current_user
+from app.services.file_parser import _generate_default_laps, _supports_default_mile_laps
 
 router = APIRouter()
 
@@ -136,7 +137,11 @@ async def get_streams(
 @router.get("/{activity_id}/laps")
 async def get_laps(activity_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     activity = await _get_or_404(db, activity_id, user.id)
-    return activity.laps or []
+    if activity.laps:
+        return activity.laps
+    if activity.gps_track and _supports_default_mile_laps(activity.activity_type):
+        return _generate_default_laps(activity.gps_track)
+    return []
 
 
 @router.get("/{activity_id}/best-efforts")
