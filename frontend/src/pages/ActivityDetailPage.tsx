@@ -5,7 +5,7 @@ import { useApi } from '../hooks/useApi'
 import { ArrowLeft, Map, BarChart2, List, Trophy, Zap, Trash2 } from 'lucide-react'
 import { useAppStore, useUnits } from '../store'
 import { Card, PageHeader, SectionHeader, StatTile, Badge, Spinner, HRZoneBar, PillSelect, Divider, EmptyState } from '../components/ui'
-import { HRStreamChart, PaceStreamChart, PowerStreamChart, ElevationStreamChart, PowerCurveChart } from '../components/charts'
+import { HRStreamChart, PaceStreamChart, PowerStreamChart, ElevationStreamChart, PowerCurveChart, PickleballStrokeTimelineChart, PickleballStrokePowerChart } from '../components/charts'
 import { ActivityMap } from '../components/map'
 import { formatDuration, formatDate, formatPace, formatWatts, activityIcon, activityLabel, activityColor, hrZoneColor, hrZoneName } from '../utils/format'
 
@@ -87,6 +87,7 @@ export default function ActivityDetailPage() {
 
   const typeColor = activityColor(act.activity_type)
   const pickleballDetails = act.sport_details?.pickleball
+  const pickleballPowerStreams = chartStreams?.sport?.pickleball_power || act.sport_streams?.pickleball_power
   const zones = {
     z1: act.hr_zone_1_seconds || 0,
     z2: act.hr_zone_2_seconds || 0,
@@ -402,6 +403,18 @@ export default function ActivityDetailPage() {
                   )
                 })}
               </div>
+            </Card>
+          ) : null}
+          {pickleballPowerStreams ? (
+            <Card>
+              <SectionHeader title="Stroke Timeline" subtitle="Each recorded stroke event plotted over workout time by stroke type" />
+              <PickleballStrokeTimelineChart data={pickleballPowerStreams} />
+            </Card>
+          ) : null}
+          {pickleballPowerStreams ? (
+            <Card>
+              <SectionHeader title="Stroke Power Over Time" subtitle="Recorded pickleball stroke power samples over time" />
+              <PickleballStrokePowerChart data={pickleballPowerStreams} />
             </Card>
           ) : null}
           {pickleballDetails?.advanced_fit ? (

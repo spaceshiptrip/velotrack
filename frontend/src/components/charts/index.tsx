@@ -13,6 +13,10 @@ const TOOLTIP_STYLE = {
   background: 'var(--bg-elevated)', border: '1px solid var(--border)',
   borderRadius: 8, fontSize: 12, color: 'var(--text-primary)', padding: '8px 12px',
 }
+const LIGHT_TICK = { fill: '#cbd5e1', fontSize: 11 }
+const LIGHT_AXIS = { tick: LIGHT_TICK, axisLine: false, tickLine: false }
+const TOOLTIP_LABEL_STYLE = { color: '#e2e8f0' }
+const TOOLTIP_ITEM_STYLE = { color: '#e2e8f0' }
 
 const GRID_PROPS = { strokeDasharray: '3 3', stroke: 'var(--border-subtle)', strokeOpacity: 0.6 }
 const AXIS_PROPS = { tick: { fill: 'var(--text-muted)', fontSize: 11 }, axisLine: false, tickLine: false }
@@ -267,6 +271,151 @@ export function BodyBatteryChart({ data }: { data: Array<{ date: string; highest
         <Line type="monotone" dataKey="highest" stroke="#22c55e" strokeWidth={1.5} dot={false} name="High" />
         <Line type="monotone" dataKey="lowest" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Low" />
       </ComposedChart>
+    </ResponsiveContainer>
+  )
+}
+
+export function PickleballStrokeTimelineChart({
+  data,
+}: {
+  data: Record<string, Array<{ t: number; power: number }>>
+}) {
+  const strokeColors: Record<string, string> = {
+    forehand: '#ec4899',
+    backhand: '#3b82f6',
+    forehand_slice: '#f97316',
+    backhand_slice: '#14b8a6',
+    serve: '#eab308',
+  }
+  const strokeLabels: Record<string, string> = {
+    forehand: 'Forehand',
+    backhand: 'Backhand',
+    forehand_slice: 'Forehand Slice',
+    backhand_slice: 'Backhand Slice',
+    serve: 'Serve',
+  }
+
+  const rows = Object.entries(data || {}).flatMap(([stroke, samples]) =>
+    (samples || []).map((sample, index) => ({
+      t: sample.t,
+      stroke: strokeLabels[stroke] || stroke,
+      strokeKey: stroke,
+      power: sample.power,
+      index,
+    }))
+  ).sort((a, b) => a.t - b.t)
+
+  if (!rows.length) return null
+
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <ScatterChart margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+        <CartesianGrid {...GRID_PROPS} />
+        <XAxis
+          type="number"
+          dataKey="t"
+          {...LIGHT_AXIS}
+          tickFormatter={(s) => formatDuration(Number(s))}
+          name="Time"
+        />
+        <YAxis
+          type="category"
+          dataKey="stroke"
+          {...LIGHT_AXIS}
+          width={110}
+        />
+        <Tooltip
+          cursor={{ strokeDasharray: '4 4' }}
+          contentStyle={TOOLTIP_STYLE}
+          labelStyle={TOOLTIP_LABEL_STYLE}
+          itemStyle={TOOLTIP_ITEM_STYLE}
+          formatter={(value: number, name: string) =>
+            name === 'power' ? [`${Math.round(value)} W`, 'Power'] : [value, name]
+          }
+          labelFormatter={(value) => `Time: ${formatDuration(Number(value))}`}
+        />
+        {Object.entries(strokeLabels).map(([strokeKey, strokeLabel]) => {
+          const series = rows.filter(row => row.strokeKey === strokeKey)
+          if (!series.length) return null
+          return (
+            <Scatter
+              key={strokeKey}
+              name={strokeLabel}
+              data={series}
+              fill={strokeColors[strokeKey] || 'var(--accent)'}
+            />
+          )
+        })}
+      </ScatterChart>
+    </ResponsiveContainer>
+  )
+}
+
+export function PickleballStrokePowerChart({
+  data,
+}: {
+  data: Record<string, Array<{ t: number; power: number }>>
+}) {
+  const strokeColors: Record<string, string> = {
+    forehand: '#ec4899',
+    backhand: '#3b82f6',
+    forehand_slice: '#f97316',
+    backhand_slice: '#14b8a6',
+    serve: '#eab308',
+  }
+
+  const rows = Object.entries(data || {}).flatMap(([stroke, samples]) =>
+    (samples || []).map((sample) => ({
+      t: sample.t,
+      watts: sample.power,
+      stroke,
+    }))
+  ).sort((a, b) => a.t - b.t)
+
+  if (!rows.length) return null
+
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <ScatterChart margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+        <CartesianGrid {...GRID_PROPS} />
+        <XAxis
+          type="number"
+          dataKey="t"
+          {...LIGHT_AXIS}
+          tickFormatter={(s) => formatDuration(Number(s))}
+          name="Time"
+        />
+        <YAxis
+          type="number"
+          dataKey="watts"
+          {...LIGHT_AXIS}
+          tickFormatter={(v) => `${Math.round(Number(v))}`}
+          name="Power"
+        />
+        <Tooltip
+          cursor={{ strokeDasharray: '4 4' }}
+          contentStyle={TOOLTIP_STYLE}
+          labelStyle={TOOLTIP_LABEL_STYLE}
+          itemStyle={TOOLTIP_ITEM_STYLE}
+          formatter={(value: number, name: string, item: any) => {
+            if (name === 'watts') return [`${Math.round(value)} W`, 'Power']
+            return [item?.payload?.stroke || value, 'Stroke']
+          }}
+          labelFormatter={(value) => `Time: ${formatDuration(Number(value))}`}
+        />
+        {Object.keys(strokeColors).map((strokeKey) => {
+          const series = rows.filter(row => row.stroke === strokeKey)
+          if (!series.length) return null
+          return (
+            <Scatter
+              key={strokeKey}
+              name={strokeKey}
+              data={series}
+              fill={strokeColors[strokeKey]}
+            />
+          )
+        })}
+      </ScatterChart>
     </ResponsiveContainer>
   )
 }
