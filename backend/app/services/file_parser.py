@@ -343,24 +343,30 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     laps = []
     session_data = {}
     sport_streams: Dict[str, Any] = {}
+    unknown_field_summary: Dict[str, Dict[str, List[str]]] = {}
+    unknown_record_samples: List[Dict[str, Any]] = []
 
     # Parse messages
     for msg in fitfile.get_messages():
         if msg.name == "session":
             for field in msg:
                 session_data[field.name] = field.value
+            _collect_unknown_fields(unknown_field_summary, "session", session_data)
 
         elif msg.name == "lap":
             lap = {}
             for field in msg:
                 lap[field.name] = field.value
             laps.append(lap)
+            _collect_unknown_fields(unknown_field_summary, "lap", lap)
 
         elif msg.name == "record":
             rec = {}
             for field in msg:
                 rec[field.name] = field.value
             track_points.append(rec)
+            _collect_unknown_fields(unknown_field_summary, "record", rec)
+            _collect_unknown_record_sample(unknown_record_samples, rec)
 
     if not track_points:
         return {"name": "FIT Import", "track_points": []}
@@ -432,7 +438,7 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     sport = session_data.get("sport", "generic")
     sub_sport = session_data.get("sub_sport", "generic")
     activity_type = _fit_sport_to_type(sport, sub_sport)
-    sport_details = _extract_fit_sport_details(session_data, activity_type, sport_streams)
+    sport_details = _extract_fit_sport_details(session_data, activity_type, sport_streams, unknown_field_summary, unknown_record_samples)
 
     # HR data
     avg_hr = session_data.get("avg_heart_rate") or (
@@ -585,7 +591,13 @@ def _append_pickleball_power_streams(sport_streams: Dict[str, Any], rec: Dict[st
         pickleball_streams.setdefault(key, []).append({"t": t_offset, "power": float(value)})
 
 
-def _extract_fit_sport_details(session_data: Dict[str, Any], activity_type: str, sport_streams: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _extract_fit_sport_details(
+    session_data: Dict[str, Any],
+    activity_type: str,
+    sport_streams: Dict[str, Any],
+    unknown_field_summary: Dict[str, Dict[str, List[str]]],
+    unknown_record_samples: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     if activity_type != "pickleball":
         return None
 
@@ -617,6 +629,10 @@ def _extract_fit_sport_details(session_data: Dict[str, Any], activity_type: str,
             "total_strokes": _safe_int(session_data.get("Total stroke count")),
             "stroke_stats": stroke_stats,
             "power_summary": power_summary,
+            "advanced_fit": {
+                "unknown_field_summary": unknown_field_summary,
+                "unknown_record_samples": unknown_record_samples,
+            },
         }
     }
 
@@ -643,3 +659,35 @@ def _safe_int(value: Any) -> Optional[int]:
         return int(text)
     except Exception:
         return None
+
+
+def _collect_unknown_fields(summary: Dict[str, Dict[str, List[str]]], msg_name: str, fields: Dict[str, Any]) -> None:
+    msg_bucket = summary.setdefault(msg_name, {})
+    for key, value in fields.items():
+        if not str(key).startswith("unknown_"):
+            continue
+        values = msg_bucket.setdefault(key, [])
+        rendered = repr(value)
+        if rendered not in values:
+            values.append(rendered)
+        if len(values) > 8:
+            del values[8:]
+
+
+def _collect_unknown_record_sample(samples: List[Dict[str, Any]], rec: Dict[str, Any]) -> None:
+    if len(samples) >= 12:
+        return
+    unknowns = {
+        key: value for key, value in rec.items()
+        if str(key).startswith("unknown_")
+        and value not in (None, 0, 0.0, (0, 0), (None, None), (None, None, None), (None, None, None, None))
+    }
+    if not unknowns:
+        return
+    samples.append({
+        "timestamp": rec.get("timestamp").isoformat() if rec.get("timestamp") else None,
+        "distance": rec.get("distance"),
+        "enhanced_speed": rec.get("enhanced_speed"),
+        "heart_rate": rec.get("heart_rate"),
+        "unknowns": unknowns,
+    })

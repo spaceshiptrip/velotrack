@@ -2,6 +2,7 @@
 from datetime import datetime, date, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, desc, extract
 
@@ -11,6 +12,86 @@ from app.api.deps import get_current_user
 from app.services.stats_engine import compute_fitness_fatigue, training_monotony, training_strain
 
 router = APIRouter()
+
+
+class AthleteProfileRequest(BaseModel):
+    ftp_watts: Optional[float] = None
+    max_hr: Optional[int] = None
+    resting_hr: Optional[int] = None
+    lthr: Optional[float] = None
+
+
+@router.get("/athlete-profile")
+async def athlete_profile(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    stats_row = (await db.execute(
+        select(AthleteStats).where(AthleteStats.user_id == user.id)
+    )).scalar_one_or_none()
+    if not stats_row:
+        return {"ftp_watts": None, "max_hr": None, "resting_hr": None, "lthr": None}
+    return {
+        "ftp_watts": stats_row.ftp_watts,
+        "max_hr": stats_row.max_hr,
+        "resting_hr": stats_row.resting_hr,
+        "lthr": stats_row.lthr,
+    }
+
+
+@router.put("/athlete-profile")
+async def update_athlete_profile(
+    req: AthleteProfileRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    stats_row = (await db.execute(
+        select(AthleteStats).where(AthleteStats.user_id == user.id)
+    )).scalar_one_or_none()
+    if not stats_row:
+        stats_row = AthleteStats(user_id=user.id)
+        db.add(stats_row)
+
+    for field in ("ftp_watts", "max_hr", "resting_hr", "lthr"):
+        value = getattr(req, field)
+        if value is not None:
+            setattr(stats_row, field, value)
+
+    # Recompute HR-derived fields for existing activities so the UI updates immediately.
+    acts = (await db.execute(
+        select(Activity).where(Activity.user_id == user.id)
+    )).scalars().all()
+
+    athlete = {
+        "ftp_watts": stats_row.ftp_watts,
+        "max_hr": stats_row.max_hr,
+        "resting_hr": stats_row.resting_hr,
+        "lthr": stats_row.lthr,
+    }
+
+    from app.services.stats_engine import compute_activity_stats
+    for a in acts:
+        derived = compute_activity_stats({
+            "duration_seconds": a.duration_seconds,
+            "distance_meters": a.distance_meters,
+            "avg_hr": a.avg_hr,
+            "avg_power_watts": a.avg_power_watts,
+            "normalized_power_watts": a.normalized_power_watts,
+            "elevation_gain_m": a.elevation_gain_m,
+            "hr_stream": a.hr_stream or [],
+        }, athlete)
+        for field, value in derived.items():
+            if hasattr(a, field) and value is not None:
+                setattr(a, field, value)
+
+    await db.commit()
+    return {
+        "ftp_watts": stats_row.ftp_watts,
+        "max_hr": stats_row.max_hr,
+        "resting_hr": stats_row.resting_hr,
+        "lthr": stats_row.lthr,
+        "updated_activities": len(acts),
+    }
 
 
 @router.get("/dashboard")

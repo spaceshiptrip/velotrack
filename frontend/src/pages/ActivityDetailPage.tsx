@@ -17,6 +17,7 @@ export default function ActivityDetailPage() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<'overview' | 'map' | 'streams' | 'laps' | 'efforts'>('overview')
   const [mapResolution, setMapResolution] = useState<'downsampled' | 'full'>('downsampled')
+  const [showAdvancedFit, setShowAdvancedFit] = useState(false)
 
   const api = useApi()
 
@@ -85,6 +86,15 @@ export default function ActivityDetailPage() {
     z4: act.hr_zone_4_seconds || 0,
     z5: act.hr_zone_5_seconds || 0,
   }
+  const maxHr = settings.maxHr || 190
+  const lthr = settings.lthr || maxHr * 0.85
+  const zoneRanges = [
+    { label: 'Z1', seconds: zones.z1, color: '#64748b', range: [0, lthr * 0.81] },
+    { label: 'Z2', seconds: zones.z2, color: '#22c55e', range: [lthr * 0.81, lthr * 0.89] },
+    { label: 'Z3', seconds: zones.z3, color: '#eab308', range: [lthr * 0.89, lthr * 0.93] },
+    { label: 'Z4', seconds: zones.z4, color: '#f97316', range: [lthr * 0.93, lthr * 1.0] },
+    { label: 'Z5', seconds: zones.z5, color: '#ef4444', range: [lthr * 1.0, lthr * 1.06] },
+  ]
 
   function handleDelete() {
     if (!id || deleteMutation.isPending) return
@@ -243,6 +253,18 @@ export default function ActivityDetailPage() {
           <Card>
             <SectionHeader title="Heart Rate Zones" />
             <HRZoneBar zones={zones} />
+            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+              {zoneRanges.map((zone) => (
+                <StatTile
+                  key={zone.label}
+                  size="sm"
+                  label={zone.label}
+                  value={formatDuration(zone.seconds as number)}
+                  sub={`${Math.round(zone.range[0])}-${Math.round(zone.range[1])} bpm`}
+                  color={zone.color}
+                />
+              ))}
+            </div>
           </Card>
 
           {/* Power curve (if available) */}
@@ -338,6 +360,71 @@ export default function ActivityDetailPage() {
                   )
                 })}
               </div>
+            </Card>
+          ) : null}
+          {pickleballDetails?.advanced_fit ? (
+            <Card>
+              <SectionHeader
+                title="Advanced FIT Data"
+                subtitle="Raw Garmin vendor fields from the FIT file. These are not decoded yet."
+                action={
+                  <button
+                    onClick={() => setShowAdvancedFit(v => !v)}
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: 8,
+                      border: '1px solid var(--border)',
+                      background: 'transparent',
+                      color: 'var(--text-secondary)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {showAdvancedFit ? 'Hide Raw Fields' : 'Show Raw Fields'}
+                  </button>
+                }
+              />
+              {showAdvancedFit ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Unknown Field Summary</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {Object.entries(pickleballDetails.advanced_fit.unknown_field_summary || {}).map(([msgName, fields]: any) => (
+                        <div key={msgName} style={{ padding: '12px 14px', background: 'var(--bg-elevated)', borderRadius: 10, border: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>{msgName}</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {Object.entries(fields).map(([fieldName, values]: any) => (
+                              <div key={fieldName} style={{ fontSize: 12, color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', wordBreak: 'break-word' }}>
+                                <span style={{ color: 'var(--text-primary)' }}>{fieldName}</span>: {values.join(', ')}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Unknown Record Samples</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {(pickleballDetails.advanced_fit.unknown_record_samples || []).map((sample: any, index: number) => (
+                        <div key={index} style={{ padding: '12px 14px', background: 'var(--bg-elevated)', borderRadius: 10, border: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                            {sample.timestamp || '—'} · HR {sample.heart_rate ?? '—'} · Speed {sample.enhanced_speed ?? '—'} · Distance {sample.distance ?? '—'}
+                          </div>
+                          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                            {JSON.stringify(sample.unknowns, null, 2)}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Hidden by default because these are raw vendor-specific FIT fields and may not map cleanly to named pickleball metrics.
+                </div>
+              )}
             </Card>
           ) : null}
           {chartStreams?.hr?.length ? (

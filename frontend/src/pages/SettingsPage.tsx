@@ -4,6 +4,7 @@ import axios from 'axios'
 import { Save, CheckCircle, Wifi, WifiOff } from 'lucide-react'
 import { useAppStore } from '../store'
 import { Card, PageHeader, SectionHeader, Divider } from '../components/ui'
+import { useApi } from '../hooks/useApi'
 
 export default function SettingsPage() {
   const { settings, updateSettings, isServerAvailable, setServerAvailable } = useAppStore()
@@ -11,9 +12,30 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
+  const [profileResult, setProfileResult] = useState<string | null>(null)
+  const api = useApi()
+
+  const saveProfileMutation = useMutation({
+    mutationFn: async () => api.put('/stats/athlete-profile', {
+      ftp_watts: local.ftpWatts,
+      max_hr: local.maxHr,
+      resting_hr: local.restingHr,
+      lthr: local.lthr,
+    }).then(r => r.data),
+    onSuccess: (data) => {
+      setProfileResult(`Server athlete profile saved. Recomputed ${data.updated_activities} activities.`)
+    },
+    onError: (e: any) => {
+      setProfileResult(`Server profile save failed: ${e.response?.data?.detail || e.message}`)
+    },
+  })
 
   function save() {
     updateSettings(local)
+    setProfileResult(null)
+    if (isServerAvailable) {
+      saveProfileMutation.mutate()
+    }
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -148,6 +170,11 @@ export default function SettingsPage() {
         {saved ? <CheckCircle size={16} /> : <Save size={16} />}
         {saved ? 'Saved!' : 'Save Settings'}
       </button>
+      {profileResult && (
+        <div style={{ marginTop: 12, fontSize: 12, color: profileResult.startsWith('Server athlete profile saved') ? 'var(--accent)' : 'var(--red)' }}>
+          {profileResult}
+        </div>
+      )}
     </div>
   )
 }
