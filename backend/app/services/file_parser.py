@@ -342,6 +342,7 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     ele_stream = []
     laps = []
     session_data = {}
+    sport_streams: Dict[str, Any] = {}
 
     # Parse messages
     for msg in fitfile.get_messages():
@@ -405,6 +406,7 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
             pace = 1000 / speed if speed > 0 else 0  # s/km from m/s
             if 60 < pace < 3600:
                 pace_stream.append({"t": t_offset, "pace": pace})
+        _append_pickleball_power_streams(sport_streams, rec, t_offset)
 
     # Compute elevation gain
     elevation_gain = 0.0
@@ -430,6 +432,7 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
     sport = session_data.get("sport", "generic")
     sub_sport = session_data.get("sub_sport", "generic")
     activity_type = _fit_sport_to_type(sport, sub_sport)
+    sport_details = _extract_fit_sport_details(session_data, activity_type, sport_streams)
 
     # HR data
     avg_hr = session_data.get("avg_heart_rate") or (
@@ -499,6 +502,8 @@ def parse_fit(content: bytes, athlete: Optional[Dict] = None) -> Dict[str, Any]:
         "laps": formatted_laps,
         "best_efforts": best_eff,
         "power_curve": power_curve_data,
+        "sport_details": sport_details,
+        "sport_streams": sport_streams or None,
         # Running dynamics (Garmin-specific FIT fields)
         "avg_stride_length_m": session_data.get("avg_stride_length"),
         "avg_vertical_oscillation_cm": session_data.get("avg_vertical_oscillation"),
@@ -524,6 +529,13 @@ def _fit_semicircles(val) -> Optional[float]:
 
 
 def _fit_sport_to_type(sport: str, sub_sport: str) -> str:
+    numeric_mapping = {
+        (64, 84): "pickleball",
+    }
+    if isinstance(sport, int) or isinstance(sub_sport, int):
+        mapped = numeric_mapping.get((sport, sub_sport))
+        if mapped:
+            return mapped
     mapping = {
         "running": "running",
         "cycling": "cycling",
@@ -536,6 +548,7 @@ def _fit_sport_to_type(sport: str, sub_sport: str) -> str:
         "paddling": "kayaking",
         "skiing": "skiing",
         "snowboarding": "snowboarding",
+        "pickleball": "pickleball",
     }
     sub_mapping = {
         "trail": "trail_running",
@@ -549,7 +562,84 @@ def _fit_sport_to_type(sport: str, sub_sport: str) -> str:
         "pilates": "pilates",
         "stair_climbing": "stair_climbing",
     }
-    sub_key = sub_sport.lower().replace(" ", "_") if sub_sport else ""
+    sub_key = sub_sport.lower().replace(" ", "_") if isinstance(sub_sport, str) and sub_sport else ""
     if sub_key in sub_mapping:
         return sub_mapping[sub_key]
-    return mapping.get(sport.lower().replace(" ", "_") if sport else "", "other")
+    sport_key = sport.lower().replace(" ", "_") if isinstance(sport, str) and sport else ""
+    return mapping.get(sport_key, "other")
+
+
+def _append_pickleball_power_streams(sport_streams: Dict[str, Any], rec: Dict[str, Any], t_offset: float) -> None:
+    stroke_power_fields = {
+        "Forehand power": "forehand",
+        "Backhand power": "backhand",
+        "Forehand Slice power": "forehand_slice",
+        "Backhand Slice power": "backhand_slice",
+        "Serve power": "serve",
+    }
+    pickleball_streams = sport_streams.setdefault("pickleball_power", {})
+    for field_name, key in stroke_power_fields.items():
+        value = rec.get(field_name)
+        if value in (None, 0):
+            continue
+        pickleball_streams.setdefault(key, []).append({"t": t_offset, "power": float(value)})
+
+
+def _extract_fit_sport_details(session_data: Dict[str, Any], activity_type: str, sport_streams: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if activity_type != "pickleball":
+        return None
+
+    stroke_stats = {}
+    for field_name, key in {
+        "Forehand stats": "forehand",
+        "Backhand stats": "backhand",
+        "Forehand Slice stats": "forehand_slice",
+        "Backhand Slice stats": "backhand_slice",
+        "Serve stats": "serve",
+    }.items():
+        parsed = _parse_pickleball_stat_block(session_data.get(field_name))
+        if parsed:
+            stroke_stats[key] = parsed
+
+    power_summary = {}
+    for key, values in (sport_streams.get("pickleball_power") or {}).items():
+        if not values:
+            continue
+        watts = [v["power"] for v in values]
+        power_summary[key] = {
+            "samples": len(watts),
+            "avg_power": round(sum(watts) / len(watts), 1),
+            "max_power": max(watts),
+        }
+
+    return {
+        "pickleball": {
+            "total_strokes": _safe_int(session_data.get("Total stroke count")),
+            "stroke_stats": stroke_stats,
+            "power_summary": power_summary,
+        }
+    }
+
+
+def _parse_pickleball_stat_block(value: Any) -> Optional[Dict[str, Any]]:
+    if not value or value == "- / - / -":
+        return None
+    parts = [part.strip() for part in str(value).split("/")]
+    if len(parts) != 3:
+        return None
+    parsed = [_safe_int(part) for part in parts]
+    if all(v is None for v in parsed):
+        return None
+    return {"count": parsed[0], "winners": parsed[1], "errors": parsed[2]}
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text == "-":
+            return None
+        return int(text)
+    except Exception:
+        return None

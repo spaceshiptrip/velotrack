@@ -134,6 +134,8 @@ async def _do_sync(start, end, user_id: int = 1):
                                 activity.laps = detailed.get("laps")
                                 activity.best_efforts = detailed.get("best_efforts")
                                 activity.power_curve = detailed.get("power_curve")
+                                activity.sport_details = detailed.get("sport_details")
+                                activity.sport_streams = detailed.get("sport_streams")
                                 # Update computed stats from detailed data
                                 from app.services.stats_engine import compute_activity_stats
                                 derived = compute_activity_stats(detailed)

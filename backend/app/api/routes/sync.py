@@ -339,5 +339,7 @@ async def _upsert_activity(db, user_id, act_data, svc):
                 activity.laps = detailed.get("laps")
                 activity.best_efforts = detailed.get("best_efforts")
                 activity.power_curve = detailed.get("power_curve")
+                activity.sport_details = detailed.get("sport_details")
+                activity.sport_streams = detailed.get("sport_streams")
         except Exception:
             pass

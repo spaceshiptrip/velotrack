@@ -134,6 +134,8 @@ async def _save_activity(db, user, data, source):
         laps=data.get("laps"),
         best_efforts=data.get("best_efforts"),
         power_curve=data.get("power_curve"),
+        sport_details=data.get("sport_details"),
+        sport_streams=data.get("sport_streams"),
         source=source,
     )
     db.add(activity)
