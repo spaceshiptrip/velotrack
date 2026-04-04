@@ -341,5 +341,12 @@ async def _upsert_activity(db, user_id, act_data, svc):
                 activity.power_curve = detailed.get("power_curve")
                 activity.sport_details = detailed.get("sport_details")
                 activity.sport_streams = detailed.get("sport_streams")
+                # Recompute derived stats from the richer FIT detail payload,
+                # including HR zone durations.
+                from app.services.stats_engine import compute_activity_stats
+                derived = compute_activity_stats(detailed)
+                for field, value in derived.items():
+                    if hasattr(activity, field) and value is not None:
+                        setattr(activity, field, value)
         except Exception:
             pass
