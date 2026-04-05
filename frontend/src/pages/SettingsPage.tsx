@@ -30,6 +30,16 @@ export default function SettingsPage() {
     },
   })
 
+  const rebuildDinkProfileMutation = useMutation({
+    mutationFn: async () => api.post('/stats/pickleball-dink-profile/rebuild').then(r => r.data),
+    onSuccess: (data) => {
+      setProfileResult(`Pickleball dink profile rebuilt from ${data.profile?.activity_count || 0} activities.`)
+    },
+    onError: (e: any) => {
+      setProfileResult(`Pickleball dink profile rebuild failed: ${e.response?.data?.detail || e.message}`)
+    },
+  })
+
   function save() {
     updateSettings(local)
     setProfileResult(null)
@@ -163,6 +173,24 @@ export default function SettingsPage() {
         <Field label="BRouter Endpoint" description="Default: bundled Docker container on port 17777">
           <input value={local.brouterEndpoint} onChange={e => setLocal(s => ({ ...s, brouterEndpoint: e.target.value }))} placeholder="http://localhost:17777" style={inputStyle} />
         </Field>
+      </Card>
+
+      <Card style={{ marginBottom: 24 }}>
+        <SectionHeader title="Pickleball Learning Mode" subtitle="Build a dink heuristic from your stored pickleball FIT-backed activities" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            This scans your existing pickleball activity power samples and writes a learned threshold profile on the server. The activity page then uses that as the default dink cutoff, with a sensitivity slider on top.
+          </div>
+          <div>
+            <button
+              onClick={() => rebuildDinkProfileMutation.mutate()}
+              disabled={rebuildDinkProfileMutation.isPending}
+              style={{ ...btnStyle, background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+            >
+              {rebuildDinkProfileMutation.isPending ? 'Rebuilding…' : 'Rebuild Dink Profile'}
+            </button>
+          </div>
+        </div>
       </Card>
 
       {/* Save */}

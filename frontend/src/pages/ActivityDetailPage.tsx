@@ -5,7 +5,7 @@ import { useApi } from '../hooks/useApi'
 import { ArrowLeft, Map, BarChart2, List, Trophy, Zap, Trash2 } from 'lucide-react'
 import { useAppStore, useUnits } from '../store'
 import { Card, PageHeader, SectionHeader, StatTile, Badge, Spinner, HRZoneBar, PillSelect, Divider, EmptyState } from '../components/ui'
-import { HRStreamChart, PaceStreamChart, PowerStreamChart, ElevationStreamChart, PowerCurveChart, PickleballStrokeTimelineChart, PickleballStrokePowerChart } from '../components/charts'
+import { HRStreamChart, PaceStreamChart, PowerStreamChart, ElevationStreamChart, PowerCurveChart, PickleballStrokePowerChart } from '../components/charts'
 import { ActivityMap } from '../components/map'
 import { formatDuration, formatDate, formatPace, formatWatts, activityIcon, activityLabel, activityColor, hrZoneColor, hrZoneName } from '../utils/format'
 
@@ -19,6 +19,7 @@ export default function ActivityDetailPage() {
   const [mapResolution, setMapResolution] = useState<'downsampled' | 'full'>('downsampled')
   const [mapMode, setMapMode] = useState<'path' | 'heatmap'>('path')
   const [showAdvancedFit, setShowAdvancedFit] = useState(false)
+  const [dinkSensitivity, setDinkSensitivity] = useState(100)
 
   const api = useApi()
 
@@ -45,6 +46,12 @@ export default function ActivityDetailPage() {
       params: { streams: 'hr,pace,power,elevation,sport' },
     }).then(r => r.data),
     enabled: !!id && tab === 'streams',
+  })
+
+  const { data: dinkProfile } = useQuery({
+    queryKey: ['pickleball-dink-profile'],
+    queryFn: () => api.get('/stats/pickleball-dink-profile').then(r => r.data?.profile),
+    enabled: tab === 'streams' && act?.activity_type === 'pickleball',
   })
 
   const { data: lapsData, isLoading: lapsLoading, isError: lapsError } = useQuery({
@@ -88,6 +95,12 @@ export default function ActivityDetailPage() {
   const typeColor = activityColor(act.activity_type)
   const pickleballDetails = act.sport_details?.pickleball
   const pickleballPowerStreams = chartStreams?.sport?.pickleball_power || act.sport_streams?.pickleball_power
+  const dinkAnalysis = analyzePossibleDinks(
+    pickleballPowerStreams,
+    pickleballDetails?.stroke_stats,
+    dinkProfile,
+    dinkSensitivity / 100,
+  )
   const zones = {
     z1: act.hr_zone_1_seconds || 0,
     z2: act.hr_zone_2_seconds || 0,
@@ -407,14 +420,57 @@ export default function ActivityDetailPage() {
           ) : null}
           {pickleballPowerStreams ? (
             <Card>
-              <SectionHeader title="Stroke Timeline" subtitle="Each recorded stroke event plotted over workout time by stroke type" />
-              <PickleballStrokeTimelineChart data={pickleballPowerStreams} />
-            </Card>
-          ) : null}
-          {pickleballPowerStreams ? (
-            <Card>
-              <SectionHeader title="Stroke Power Over Time" subtitle="Recorded pickleball stroke power samples over time" />
-              <PickleballStrokePowerChart data={pickleballPowerStreams} />
+              <SectionHeader
+                title="Stroke Power Over Time"
+                subtitle="Recorded pickleball stroke power samples over time. Candidate dinks are highlighted directly on the chart."
+              />
+              <div style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <span>Dink sensitivity</span>
+                  <span>{dinkSensitivity}% of learned threshold</span>
+                </div>
+                <input
+                  type="range"
+                  min={60}
+                  max={140}
+                  step={5}
+                  value={dinkSensitivity}
+                  onChange={(e) => setDinkSensitivity(Number(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Lower values are stricter. Higher values include more borderline soft shots.
+                </div>
+              </div>
+              <div style={{ overflowX: 'auto', marginBottom: 14 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      {['Stroke', 'Candidate Dinks', 'Avg Power', 'Max Power', 'Cutoff'].map((header) => (
+                        <th key={header} style={{ padding: '8px 12px', textAlign: header === 'Stroke' ? 'left' : 'right', color: 'var(--text-muted)', fontWeight: 500, borderBottom: '1px solid var(--border)', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>
+                          {header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      { label: 'Total', row: dinkAnalysis.total },
+                      { label: 'Forehand', row: dinkAnalysis.forehand },
+                      { label: 'Backhand', row: dinkAnalysis.backhand },
+                    ].map(({ label, row }) => (
+                      <tr key={label} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 600 }}>{label}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{row.estimatedCount}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{row.avgPower ? `${Math.round(row.avgPower)} W` : '—'}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{row.maxPower ? `${Math.round(row.maxPower)} W` : '—'}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>{row.cutoff ? `${Math.round(row.cutoff)} W` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <PickleballStrokePowerChart data={pickleballPowerStreams} candidateThresholds={dinkAnalysis.thresholds} />
             </Card>
           ) : null}
           {pickleballDetails?.advanced_fit ? (
@@ -585,4 +641,113 @@ export default function ActivityDetailPage() {
       )}
     </div>
   )
+}
+
+function analyzePossibleDinks(
+  pickleballPowerStreams: Record<string, Array<{ t: number; power: number }>> | undefined,
+  strokeStats: any,
+  dinkProfile: any,
+  sensitivityScale: number,
+) {
+  const source = pickleballPowerStreams || {}
+  const trackedStrokes = ['forehand', 'backhand']
+  const thresholds: Record<string, number | null> = {}
+
+  for (const stroke of trackedStrokes) {
+    const learned = dinkProfile?.strokes?.[stroke]?.threshold_power
+    if (learned != null) {
+      thresholds[stroke] = learned * sensitivityScale
+      continue
+    }
+    const samples = (source[stroke] || []).map((sample) => sample.power).filter((value) => value != null).sort((a, b) => a - b)
+    thresholds[stroke] = samples.length ? percentile(samples, 0.35) * sensitivityScale : null
+  }
+
+  const samples = trackedStrokes.flatMap((stroke) =>
+    (source[stroke] || [])
+      .filter((sample) => thresholds[stroke] != null && sample.power <= (thresholds[stroke] as number))
+      .map((sample) => ({
+        ...sample,
+        stroke,
+      }))
+  ).sort((a, b) => a.t - b.t)
+
+  const forehandTotal = strokeStats?.forehand?.count || 0
+  const backhandTotal = strokeStats?.backhand?.count || 0
+  const forehandSamplesTotal = (source.forehand || []).length
+  const backhandSamplesTotal = (source.backhand || []).length
+
+  const forehand = summarizeDinks(
+    samples.filter(sample => sample.stroke === 'forehand'),
+    thresholds.forehand,
+    forehandTotal,
+    forehandSamplesTotal,
+  )
+  const backhand = summarizeDinks(
+    samples.filter(sample => sample.stroke === 'backhand'),
+    thresholds.backhand,
+    backhandTotal,
+    backhandSamplesTotal,
+  )
+
+  return {
+    thresholds,
+    samples,
+    forehand,
+    backhand,
+    total: {
+      estimatedCount: forehand.estimatedCount + backhand.estimatedCount,
+      avgPower: averageNullable([forehand.avgPower, backhand.avgPower], [forehand.estimatedCount, backhand.estimatedCount]),
+      maxPower: maxNullable([forehand.maxPower, backhand.maxPower]),
+      cutoff: null,
+    },
+  }
+}
+
+function summarizeDinks(
+  samples: Array<{ power: number }>,
+  cutoff: number | null,
+  officialStrokeCount: number,
+  totalSampleCount: number,
+) {
+  const powers = samples.map(sample => sample.power)
+  const estimatedCount = totalSampleCount > 0 && officialStrokeCount > 0
+    ? Math.min(
+        officialStrokeCount,
+        Math.round((samples.length / totalSampleCount) * officialStrokeCount)
+      )
+    : 0
+  return {
+    estimatedCount,
+    avgPower: powers.length ? powers.reduce((sum, value) => sum + value, 0) / powers.length : null,
+    maxPower: powers.length ? Math.max(...powers) : null,
+    cutoff,
+  }
+}
+
+function averageNullable(values: Array<number | null>, weights: Array<number>) {
+  let weighted = 0
+  let totalWeight = 0
+  values.forEach((value, index) => {
+    if (value == null || !weights[index]) return
+    weighted += value * weights[index]
+    totalWeight += weights[index]
+  })
+  return totalWeight ? weighted / totalWeight : null
+}
+
+function maxNullable(values: Array<number | null>) {
+  const filtered = values.filter((value): value is number => value != null)
+  return filtered.length ? Math.max(...filtered) : null
+}
+
+function percentile(values: number[], p: number) {
+  if (!values.length) return 0
+  if (values.length === 1) return values[0]
+  const index = Math.max(0, Math.min(1, p)) * (values.length - 1)
+  const lower = Math.floor(index)
+  const upper = Math.ceil(index)
+  if (lower === upper) return values[lower]
+  const fraction = index - lower
+  return values[lower] + (values[upper] - values[lower]) * fraction
 }

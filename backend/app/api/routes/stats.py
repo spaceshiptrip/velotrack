@@ -10,6 +10,11 @@ from app.core.database import get_db
 from app.models.models import Activity, HealthMetric, AthleteStats, User
 from app.api.deps import get_current_user
 from app.services.stats_engine import compute_fitness_fatigue, training_monotony, training_strain
+from app.services.pickleball_heuristics import (
+    load_pickleball_profile,
+    build_pickleball_profile,
+    save_pickleball_profile,
+)
 
 router = APIRouter()
 
@@ -19,6 +24,48 @@ class AthleteProfileRequest(BaseModel):
     max_hr: Optional[int] = None
     resting_hr: Optional[int] = None
     lthr: Optional[float] = None
+
+
+@router.get("/pickleball-dink-profile")
+async def get_pickleball_dink_profile(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    profile = load_pickleball_profile(user.id)
+    if profile:
+        return {"status": "ok", "profile": profile}
+
+    activities = (await db.execute(
+        select(Activity).where(
+            and_(
+                Activity.user_id == user.id,
+                Activity.activity_type == "pickleball",
+                Activity.sport_streams.isnot(None),
+            )
+        )
+    )).scalars().all()
+    profile = build_pickleball_profile(activities)
+    path = save_pickleball_profile(user.id, profile)
+    return {"status": "ok", "profile": profile, "path": str(path), "generated": True}
+
+
+@router.post("/pickleball-dink-profile/rebuild")
+async def rebuild_pickleball_dink_profile(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    activities = (await db.execute(
+        select(Activity).where(
+            and_(
+                Activity.user_id == user.id,
+                Activity.activity_type == "pickleball",
+                Activity.sport_streams.isnot(None),
+            )
+        )
+    )).scalars().all()
+    profile = build_pickleball_profile(activities)
+    path = save_pickleball_profile(user.id, profile)
+    return {"status": "ok", "profile": profile, "path": str(path)}
 
 
 @router.get("/athlete-profile")
